@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import toast from "react-hot-toast";
 import { formatBytes } from "../crypto/media";
 import { filesFor, type FileCardInfo } from "../services/messaging";
@@ -46,6 +46,8 @@ const STATUS_TEXT: Record<string, string> = {
 const FileTransferCard: React.FC<{ info: FileCardInfo }> = ({ info }) => {
   const { m, v } = useTransfer(info.transferId);
   const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const run = (fn: () => Promise<void>) => async () => {
     setBusy(true);
     try {
@@ -56,6 +58,7 @@ const FileTransferCard: React.FC<{ info: FileCardInfo }> = ({ info }) => {
       setBusy(false);
     }
   };
+
   const download = run(async () => {
     const { blob, name } = await m!.download(info.transferId);
     const url = URL.createObjectURL(blob);
@@ -66,6 +69,25 @@ const FileTransferCard: React.FC<{ info: FileCardInfo }> = ({ info }) => {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   });
+
+  const onFileReselected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !m) return;
+    setBusy(true);
+    try {
+      const res = await m.reselectSource(info.transferId, file);
+      if (res.ok) {
+        toast.success("Source file verified. Resuming transfer...");
+      } else {
+        toast.error(`Could not resume: ${res.error || "file mismatch"}`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Source reselection failed.");
+    } finally {
+      setBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   const status = v?.status ?? (m ? "gone" : "loading");
   const pct = v && v.chunkCount > 0 ? Math.round((100 * v.done) / v.chunkCount) : 0;
@@ -79,30 +101,91 @@ const FileTransferCard: React.FC<{ info: FileCardInfo }> = ({ info }) => {
         {formatBytes(info.size)} · {STATUS_TEXT[status] ?? status}
         {active ? ` · ${pct}%` : ""}
       </p>
-      {v?.note && <p className="text-xs opacity-80">{v.note}</p>}
+      {v?.note && <p className="text-xs text-amber-300/90">{v.note}</p>}
       {active && (
         <div className="h-1.5 rounded bg-slate-950/40 overflow-hidden">
           <div className="h-full bg-emerald-400" style={{ width: `${pct}%` }} />
         </div>
       )}
-      <div className="flex gap-2 pt-1">
+      <p className="text-[10px] text-slate-400 tracking-tight">
+        Direct encrypted transfer · Both users must be online
+      </p>
+      <div className="flex flex-wrap gap-2 pt-1">
         {v?.direction === "in" && status === "offered" && (
           <>
-            <button type="button" disabled={busy} onClick={run(() => m!.accept(info.transferId))} className={`${btn} bg-emerald-700 border-emerald-600`}>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={run(() => m!.accept(info.transferId))}
+              className={`${btn} bg-emerald-700 border-emerald-600`}
+            >
               Accept file
             </button>
-            <button type="button" disabled={busy} onClick={run(() => m!.reject(info.transferId))} className={`${btn} bg-slate-700 border-slate-600`}>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={run(() => m!.reject(info.transferId))}
+              className={`${btn} bg-slate-700 border-slate-600`}
+            >
               Decline
             </button>
           </>
         )}
+        {(status === "sending" || status === "receiving") && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={run(() => m!.pause(info.transferId))}
+            className={`${btn} bg-amber-700 border-amber-600`}
+          >
+            Pause
+          </button>
+        )}
+        {status === "paused" && !v?.needsSource && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={run(() => m!.resume(info.transferId))}
+            className={`${btn} bg-emerald-700 border-emerald-600`}
+          >
+            Resume
+          </button>
+        )}
+        {status === "paused" && v?.needsSource && (
+          <>
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={onFileReselected}
+              className="hidden"
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => fileInputRef.current?.click()}
+              className={`${btn} bg-indigo-700 border-indigo-600`}
+            >
+              Select file to resume
+            </button>
+          </>
+        )}
         {(active || (v?.direction === "out" && status === "offered")) && (
-          <button type="button" disabled={busy} onClick={run(() => m!.cancel(info.transferId))} className={`${btn} bg-slate-700 border-slate-600`}>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={run(() => m!.cancel(info.transferId))}
+            className={`${btn} bg-slate-700 border-slate-600`}
+          >
             Cancel
           </button>
         )}
         {v?.direction === "in" && status === "complete" && (
-          <button type="button" disabled={busy} onClick={download} className={`${btn} bg-indigo-700 border-indigo-600`}>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={download}
+            className={`${btn} bg-indigo-700 border-indigo-600`}
+          >
             Download
           </button>
         )}

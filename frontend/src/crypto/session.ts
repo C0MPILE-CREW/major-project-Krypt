@@ -60,8 +60,8 @@ export interface SessionManagerOptions {
   fetchBundle: (username: string) => Promise<PrekeyBundleWire>;
   /** The peer's identityKey JSON (same format as bundle.identityKey), without claiming an OPK. */
   fetchIdentity: (username: string) => Promise<string>;
-  /** Key-transparency / pinning hook. Default: accept. */
-  trustIdentity?: (username: string, dsaPub: Uint8Array) => Promise<boolean>;
+  /** Key-transparency / pinning hook. Required: SessionManager fails closed if missing or refused. */
+  trustIdentity: (username: string, dsaPub: Uint8Array) => Promise<boolean>;
   /** Ratchet suite for sessions this side initiates. Default "mlkem1024". */
   suite?: KemSuite;
   /** Ratchet threshold K (spec 5.6). Default DEFAULT_RATCHET_EVERY_K; 1 gives the fastest healing. */
@@ -156,7 +156,10 @@ export class SessionManager {
     this.prekeys = opts.prekeys;
     this.fetchBundle = opts.fetchBundle;
     this.fetchIdentity = opts.fetchIdentity;
-    this.trustIdentity = opts.trustIdentity ?? (async () => true);
+    if (typeof opts.trustIdentity !== "function") {
+      throw new Error("SessionManager requires an identity trust verifier");
+    }
+    this.trustIdentity = opts.trustIdentity;
     this.suite = opts.suite ?? "mlkem1024";
     this.K = K;
     this.lock = opts.lock ?? defaultLock();

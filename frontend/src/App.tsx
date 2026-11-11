@@ -11,6 +11,7 @@ import { useSocial } from "./hooks/useSocial";
 import { useChat } from "./hooks/useChat";
 import { useSocketListeners } from "./hooks/useSocketListeners";
 import { useProtocol } from "./hooks/useProtocol";
+import { useCoverTraffic } from "./hooks/useCoverTraffic";
 import { Toaster } from "react-hot-toast";
 
 const toaster = (
@@ -92,6 +93,8 @@ export default function App() {
     setFriendsList,
     setOnlineUsers,
   });
+
+  useCoverTraffic(protocol, activeChat, onlineUsers);
 
   const [securityFor, setSecurityFor] = useState<string | null>(null);
 

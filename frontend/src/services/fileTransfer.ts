@@ -37,7 +37,12 @@ import {
   type FileControl,
   type FileManifestV1,
 } from "../crypto/fileManifest";
-import { decryptFileChunk, encryptFileChunk, importFileKey } from "../crypto/fileTransfer";
+import {
+  computeFileFingerprint,
+  decryptFileChunk,
+  encryptFileChunk,
+  importFileKey,
+} from "../crypto/fileTransfer";
 import type { LockFn } from "../crypto/session";
 import {
   countBits,
@@ -94,6 +99,7 @@ export interface TransferView {
   done: number;
   chunkCount: number;
   note?: string;
+  needsSource?: boolean;
 }
 
 const ACTIVE: TransferStatus[] = ["offered", "sending", "paused", "receiving"];
@@ -102,13 +108,15 @@ const TERMINAL: TransferStatus[] = ["complete", "cancelled", "expired"];
 const RETRYABLE = new Set(["OFFLINE", "RATE_LIMITED", "TOO_MANY_TRANSFERS", "SERVER_ERROR", "NO_ACK"]);
 
 export class FileTransferError extends Error {
-  constructor(message: string) {
+  readonly code?: string;
+  constructor(message: string, code?: string) {
     super(message);
     this.name = "FileTransferError";
+    this.code = code;
   }
 }
 
-function view(r: TransferRecord): TransferView {
+function view(r: TransferRecord, hasFile?: boolean): TransferView {
   return {
     transferId: r.manifest.transferId,
     direction: r.direction,
@@ -119,6 +127,7 @@ function view(r: TransferRecord): TransferView {
     done: countBits(r.have, r.manifest.chunkCount),
     chunkCount: r.manifest.chunkCount,
     ...(r.note ? { note: r.note } : {}),
+    ...(r.direction === "out" && !TERMINAL.includes(r.status) && hasFile === false ? { needsSource: true } : {}),
   };
 }
 
@@ -157,9 +166,10 @@ export class FileTransferManager {
     for (const r of await this.d.store.listTransfers()) {
       if (r.direction === "out" && r.status === "sending") {
         r.status = "paused";
+        r.note = "Paused after reload. Reselect source file to resume.";
         await this.d.store.putTransfer(r);
       }
-      this.views.set(r.manifest.transferId, view(r));
+      this.publish(r);
     }
     await this.expire();
   }
@@ -182,7 +192,8 @@ export class FileTransferManager {
   }
 
   private publish(r: TransferRecord) {
-    this.views.set(r.manifest.transferId, view(r));
+    const hasFile = this.files.has(r.manifest.transferId);
+    this.views.set(r.manifest.transferId, view(r, hasFile));
     this.listeners.forEach((fn) => fn());
   }
 
@@ -213,6 +224,12 @@ export class FileTransferManager {
 
   /** Stops an active transfer for good: sets the status, then deletes its packets, chunks and counter. */
   private async finish(id: string, status: "complete" | "cancelled" | "expired", note?: string) {
+    this.clearAckTimer(id);
+    this.pumping.delete(id);
+    this.pumpAgain.delete(id);
+    this.inFlight.delete(id);
+    this.files.delete(id);
+    this.keys.delete(id);
     const r = await this.update(id, (x) => {
       if (TERMINAL.includes(x.status)) return false;
       x.status = status;
@@ -220,10 +237,9 @@ export class FileTransferManager {
       return true;
     });
     if (!r) return;
-    this.files.delete(id);
-    this.inFlight.delete(id);
-    this.clearAckTimer(id);
-    await this.d.store.deleteData(id);
+    await this.d.store.deleteData(id).catch((err) => {
+      console.warn(`[Krypt] error deleting data for transfer ${id}:`, err);
+    });
   }
 
   /** Expires transfers idle for TRANSFER_TTL_MS; deletes finished ones entirely. */
@@ -254,12 +270,13 @@ export class FileTransferManager {
   async offer(peer: string, file: Blob, name: string, mime = file.type): Promise<FileManifestV1> {
     await this.ready;
     if (file.size > MAX_FILE_BYTES) {
-      throw new FileTransferError(`File is too large: limit ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MB.`);
+      throw new FileTransferError(`File is too large: limit ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MB.`, "FILE_TOO_LARGE");
     }
     if ((await this.activeCount("out")).length >= MAX_ACTIVE_TRANSFERS) {
-      throw new FileTransferError(`At most ${MAX_ACTIVE_TRANSFERS} outgoing transfers at a time.`);
+      throw new FileTransferError(`At most ${MAX_ACTIVE_TRANSFERS} outgoing transfers at a time.`, "TOO_MANY_TRANSFERS");
     }
     const manifest = createManifest(name, mime, file.size, this.chunkSize);
+    const fingerprint = await computeFileFingerprint(file, this.chunkSize);
     const t = this.now();
     const r: TransferRecord = {
       manifest,
@@ -268,6 +285,7 @@ export class FileTransferManager {
       status: "offered",
       have: emptyBitmap(manifest.chunkCount),
       usedCounters: [],
+      sourceFingerprint: fingerprint,
       createdAt: t,
       updatedAt: t,
     };
@@ -277,10 +295,50 @@ export class FileTransferManager {
     try {
       await this.d.sendControl(peer, { op: "offer", manifest });
     } catch (err) {
+      this.files.delete(manifest.transferId);
+      this.keys.delete(manifest.transferId);
       await this.finish(manifest.transferId, "cancelled", "The offer could not be sent.");
       throw err;
     }
     return manifest;
+  }
+
+  /**
+   * Reselects the source file after reload or loss of in-memory File handle.
+   * Compares file size and incrementally computes SHA-256 fingerprint.
+   * Resumes sending if matches; otherwise cancels the transfer.
+   */
+  async reselectSource(id: string, file: Blob): Promise<{ ok: boolean; error?: string }> {
+    await this.ready;
+    const r = await this.d.store.getTransfer(id);
+    if (!r || r.direction !== "out") {
+      return { ok: false, error: "TRANSFER_NOT_FOUND" };
+    }
+    if (TERMINAL.includes(r.status)) {
+      return { ok: false, error: "TRANSFER_TERMINATED" };
+    }
+    if (file.size !== r.manifest.size) {
+      await this.finish(id, "cancelled", "Reselected file size does not match original file.");
+      await this.d.sendControl(r.peer, { op: "cancel", transferId: id }).catch(() => {});
+      return { ok: false, error: "SIZE_MISMATCH" };
+    }
+    const fp = await computeFileFingerprint(file, this.chunkSize);
+    if (r.sourceFingerprint && fp !== r.sourceFingerprint) {
+      await this.finish(id, "cancelled", "Reselected file fingerprint does not match original file.");
+      await this.d.sendControl(r.peer, { op: "cancel", transferId: id }).catch(() => {});
+      return { ok: false, error: "FINGERPRINT_MISMATCH" };
+    }
+    this.files.set(id, file);
+    await this.update(id, (x) => {
+      if (x.status === "paused") {
+        x.status = "sending";
+        delete x.note;
+        return true;
+      }
+      return true;
+    });
+    this.kick(id);
+    return { ok: true };
   }
 
   /** Encrypts chunk `index` under a freshly reserved counter and saves the packet. Null if the file is gone. */
@@ -291,16 +349,19 @@ export class FileTransferManager {
     const nonceCounter = await this.d.store.reserveCounter(id);
     const start = index * r.manifest.chunkSize;
     const plaintext = new Uint8Array(await file.slice(start, start + chunkLength(r.manifest, index)).arrayBuffer());
-    const data = await encryptFileChunk({
-      fileKey: await this.key(r.manifest),
-      nonce: chunkNonce(r.manifest, nonceCounter),
-      plaintext,
-      aad: chunkAad(r.manifest, this.d.self, r.peer, index, nonceCounter),
-    });
-    plaintext.fill(0);
-    const packet = { nonceCounter, data };
-    await this.d.store.putPacket(id, index, packet);
-    return packet;
+    try {
+      const data = await encryptFileChunk({
+        fileKey: await this.key(r.manifest),
+        nonce: chunkNonce(r.manifest, nonceCounter),
+        plaintext,
+        aad: chunkAad(r.manifest, this.d.self, r.peer, index, nonceCounter),
+      });
+      const packet = { nonceCounter, data };
+      await this.d.store.putPacket(id, index, packet);
+      return packet;
+    } finally {
+      plaintext.fill(0);
+    }
   }
 
   /** Starts sending without making the caller (the receive queue) wait for it. */
@@ -403,12 +464,68 @@ export class FileTransferManager {
 
   async accept(id: string): Promise<void> {
     await this.ready;
-    const r = await this.update(id, (x) => {
-      if (x.direction !== "in" || x.status !== "offered") return false;
-      x.status = "receiving";
+    return this.d.lock(`krypt-file-quota:${this.d.self}`, async () => {
+      await this.expire();
+      const records = await this.d.store.listTransfers();
+      const activeReceiving = records.filter(
+        (x) => x.direction === "in" && ACTIVE.includes(x.status) && x.status !== "offered",
+      );
+      if (activeReceiving.length >= MAX_ACTIVE_TRANSFERS) {
+        throw new FileTransferError(`At most ${MAX_ACTIVE_TRANSFERS} active transfers allowed.`, "TOO_MANY_TRANSFERS");
+      }
+      const target = records.find((x) => x.manifest.transferId === id);
+      if (!target || target.direction !== "in" || target.status !== "offered") return;
+      const stored = records
+        .filter((x) => x.direction === "in" && !TERMINAL.includes(x.status) && x.manifest.transferId !== id)
+        .reduce((n, x) => n + x.manifest.size, 0);
+      if (stored + target.manifest.size > MAX_STORED_BYTES) {
+        await this.finish(id, "cancelled", "Declined: not enough file storage left on this device.");
+        await this.d.sendControl(target.peer, { op: "reject", transferId: id }).catch(() => {});
+        throw new FileTransferError("Not enough file storage left on this device.", "QUOTA_EXCEEDED");
+      }
+      const r = await this.update(id, (x) => {
+        if (x.direction !== "in" || x.status !== "offered") return false;
+        x.status = "receiving";
+        return true;
+      });
+      if (r) await this.d.sendControl(r.peer, { op: "accept", transferId: id });
+    });
+  }
+
+  async pause(id: string): Promise<void> {
+    await this.ready;
+    await this.update(id, (x) => {
+      if (x.status !== "sending" && x.status !== "receiving") return false;
+      x.status = "paused";
+      x.note = "Paused by user.";
       return true;
     });
-    if (r) await this.d.sendControl(r.peer, { op: "accept", transferId: id });
+  }
+
+  async resume(id: string): Promise<void> {
+    await this.ready;
+    const r = await this.d.store.getTransfer(id);
+    if (!r || r.status !== "paused") return;
+    if (r.direction === "out") {
+      if (!this.files.has(id)) {
+        throw new FileTransferError("Source file needs to be selected to resume.", "NEEDS_SOURCE");
+      }
+      await this.update(id, (x) => {
+        if (x.status !== "paused") return false;
+        x.status = "sending";
+        delete x.note;
+        return true;
+      });
+      this.kick(id);
+    } else {
+      await this.update(id, (x) => {
+        if (x.status !== "paused") return false;
+        x.status = "receiving";
+        delete x.note;
+        return true;
+      });
+      await this.sendHave(id, "resume");
+    }
   }
 
   async reject(id: string): Promise<void> {
@@ -555,25 +672,38 @@ export class FileTransferManager {
   async download(id: string): Promise<{ blob: Blob; name: string }> {
     await this.ready;
     const r = await this.d.store.getTransfer(id);
-    if (!r || r.direction !== "in" || r.status !== "complete") throw new FileTransferError("This file is not available.");
+    if (!r || r.direction !== "in" || r.status !== "complete") {
+      throw new FileTransferError("This file is not available.", "NOT_AVAILABLE");
+    }
     const key = await this.key(r.manifest);
     const parts: Uint8Array<ArrayBuffer>[] = [];
     let total = 0;
-    for (let i = 0; i < r.manifest.chunkCount; i++) {
-      const c = await this.d.store.getChunk(id, i);
-      if (!c) throw new FileTransferError("A part of this file is missing.");
-      const pt = await decryptFileChunk({
-        fileKey: key,
-        nonce: chunkNonce(r.manifest, c.nonceCounter),
-        ciphertextAndTag: c.data,
-        aad: chunkAad(r.manifest, r.peer, this.d.self, i, c.nonceCounter),
-      });
-      if (pt.length !== chunkLength(r.manifest, i)) throw new FileTransferError("A part of this file has the wrong size.");
-      total += pt.length;
-      parts.push(pt as Uint8Array<ArrayBuffer>);
+    try {
+      for (let i = 0; i < r.manifest.chunkCount; i++) {
+        const c = await this.d.store.getChunk(id, i);
+        if (!c) throw new FileTransferError("A part of this file is missing.", "MISSING_CHUNK");
+        const pt = await decryptFileChunk({
+          fileKey: key,
+          nonce: chunkNonce(r.manifest, c.nonceCounter),
+          ciphertextAndTag: c.data,
+          aad: chunkAad(r.manifest, r.peer, this.d.self, i, c.nonceCounter),
+        });
+        if (pt.length !== chunkLength(r.manifest, i)) {
+          throw new FileTransferError("A part of this file has the wrong size.", "LENGTH_MISMATCH");
+        }
+        total += pt.length;
+        parts.push(pt as Uint8Array<ArrayBuffer>);
+      }
+      if (total !== r.manifest.size) {
+        throw new FileTransferError("The file has the wrong size.", "SIZE_MISMATCH");
+      }
+      return { blob: new Blob(parts, { type: "application/octet-stream" }), name: safeFileName(r.manifest.name) };
+    } finally {
+      // Best-effort cleanup of decrypted chunk buffers
+      for (const p of parts) {
+        p.fill(0);
+      }
     }
-    if (total !== r.manifest.size) throw new FileTransferError("The file has the wrong size.");
-    return { blob: new Blob(parts, { type: "application/octet-stream" }), name: safeFileName(r.manifest.name) };
   }
 
   // -------------------------------------------------------------------------
@@ -609,17 +739,25 @@ export class FileTransferManager {
         }
         break;
       case "reject":
-        if (r.direction === "out") await this.finish(id, "cancelled", `${peer} declined the file.`);
+        if (r.direction === "out" && !TERMINAL.includes(r.status)) {
+          await this.finish(id, "cancelled", `${peer} declined the file.`);
+        }
         break;
       case "ack":
       case "resume":
-        await this.onHave(peer, id, ctl.have, ctl.op === "resume");
+        if (!TERMINAL.includes(r.status)) {
+          await this.onHave(peer, id, ctl.have, ctl.op === "resume");
+        }
         break;
       case "complete":
-        if (r.direction === "out") await this.finish(id, "complete");
+        if (r.direction === "out" && r.status !== "complete") {
+          await this.finish(id, "complete");
+        }
         break;
       case "cancel":
-        await this.finish(id, "cancelled", `${peer} cancelled the transfer.`);
+        if (!TERMINAL.includes(r.status)) {
+          await this.finish(id, "cancelled", `${peer} cancelled the transfer.`);
+        }
         break;
     }
     return false;

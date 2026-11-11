@@ -222,6 +222,13 @@ export async function sendChatMessage(p: Protocol, peer: string, content: Outgoi
   await storeMessage(p.keys, { from: p.username, to: peer, decryptedText: display, type: content.type, timestamp: msg.sentAt, msgId: msg.id });
 }
 
+/** Sends a dummy cover message to an online peer to mask traffic patterns. */
+export async function sendCoverMessage(p: Protocol, peer: string): Promise<void> {
+  const msg: AppMessage = { v: 1, id: newId(), sentAt: Date.now() };
+  const item: Outgoing = { contentType: "cover", msg };
+  await transmit(p, peer, item);
+}
+
 // ---------------------------------------------------------------------------
 // Large files
 
@@ -346,6 +353,13 @@ async function processIncoming(raw: unknown) {
   if (await p.messageState.hasSeen(peer, msg.id)) return;
 
   void p.kt.checkGossip(peer, msg.kt).catch((err) => console.warn("[KT] gossip check failed:", err));
+
+  if (result.contentType === "cover") {
+    // Dummy cover message: session ratchets have advanced and KT gossip is verified,
+    // but the message is silently absorbed without persisting to storage or disturbing UI.
+    await p.messageState.markSeen(peer, msg.id);
+    return;
+  }
 
   if (msg.ctl) {
     const newOffer = await filesFor(p).onControl(peer, msg.ctl);

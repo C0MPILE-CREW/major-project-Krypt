@@ -11,6 +11,7 @@ const sharedDir = fileURLToPath(new URL('../shared/src', import.meta.url))
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: process.env.VITE_BASE_PATH || './',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { '@krypt/shared': `${sharedDir}/index.ts` },

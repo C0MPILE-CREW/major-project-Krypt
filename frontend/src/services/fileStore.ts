@@ -18,6 +18,8 @@ import { fromBase64url, lp, toBase64url, utf8, fromUtf8 } from "../crypto/encodi
 import { bitmapBytes, type FileManifestV1 } from "../crypto/fileManifest";
 import { done, open, openDb, req, seal, type Sealed } from "../crypto/session-store";
 
+import type { LockFn } from "../crypto/session";
+
 const RECORD_LABEL = "krypt-file-transfer-v1";
 
 export type TransferStatus = "offered" | "sending" | "paused" | "receiving" | "complete" | "cancelled" | "expired";
@@ -35,6 +37,8 @@ export interface TransferRecord {
   note?: string;
   createdAt: number;
   updatedAt: number;
+  /** Outgoing only: SHA-256 fingerprint of the source file for reload resumption. */
+  sourceFingerprint?: string;
 }
 
 export interface ChunkPacket {
@@ -65,14 +69,17 @@ export interface FileStoreOptions {
   key: CryptoKey;
   dbName: string;
   indexedDB?: IDBFactory;
+  lock?: LockFn;
 }
 
 export class FileStore {
   private db: Promise<IDBDatabase>;
   private key: CryptoKey;
+  private readonly lock?: LockFn;
 
   constructor(opts: FileStoreOptions) {
     this.key = opts.key;
+    this.lock = opts.lock;
     this.db = openDb(opts.indexedDB ?? globalThis.indexedDB, opts.dbName, ["transfers", "counters", "packets", "chunks"]);
   }
 
@@ -106,16 +113,19 @@ export class FileStore {
 
   /** Returns the next nonce counter for `id` and persists counter + 1, in one transaction. */
   async reserveCounter(id: string): Promise<number> {
-    const tx = (await this.db).transaction("counters", "readwrite");
-    const store = tx.objectStore("counters");
-    let reserved = 0;
-    const r = store.get(id);
-    r.onsuccess = () => {
-      reserved = (r.result as number | undefined) ?? 0;
-      store.put(reserved + 1, id);
+    const run = async () => {
+      const tx = (await this.db).transaction("counters", "readwrite");
+      const store = tx.objectStore("counters");
+      let reserved = 0;
+      const r = store.get(id);
+      r.onsuccess = () => {
+        reserved = (r.result as number | undefined) ?? 0;
+        store.put(reserved + 1, id);
+      };
+      await done(tx);
+      return reserved;
     };
-    await done(tx);
-    return reserved;
+    return this.lock ? this.lock(`krypt-counter:${id}`, run) : run();
   }
 
   async putPacket(id: string, index: number, p: ChunkPacket): Promise<void> {

@@ -63,6 +63,7 @@ export interface PartyOptions {
   now?: () => number;
   lock?: LockFn;
   store?: SessionStore;
+  trustIdentity?: (username: string, dsaPub: Uint8Array) => Promise<boolean>;
 }
 
 export async function makeParty(dir: Directory, name: string, opts: PartyOptions = {}): Promise<Party> {
@@ -97,6 +98,7 @@ export function managerFor(
     suite: opts.suite,
     ratchetEveryK: opts.ratchetEveryK,
     now: opts.now,
+    trustIdentity: opts.trustIdentity ?? (async () => true),
     lock: opts.lock ?? createMutexLock(),
   });
 }

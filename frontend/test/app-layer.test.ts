@@ -66,6 +66,26 @@ describe("app messages and frames", () => {
     expect(() => parseAppMessage(encodeAppMessage({ ...base, file: meta }), "image")).toThrow(/carries/);
   });
 
+  it("pads messages to uniform bucket boundaries and supports cover messages", async () => {
+    // 1. Short text message pads to minimum 512-byte bucket
+    const shortEncoded = encodeAppMessage({ ...base, text: "hi" });
+    expect(shortEncoded.length).toBe(512);
+    const parsedShort = parseAppMessage(shortEncoded, "text");
+    expect(parsedShort.text).toBe("hi");
+
+    // 2. Dummy cover message also pads to 512 bytes
+    const coverEncoded = encodeAppMessage(base);
+    expect(coverEncoded.length).toBe(512);
+    const parsedCover = parseAppMessage(coverEncoded, "cover");
+    expect(parsedCover.id).toBe(base.id);
+
+    // 3. Medium message pads to 1024 bytes
+    const medEncoded = encodeAppMessage({ ...base, text: "x".repeat(600) });
+    expect(medEncoded.length).toBe(1024);
+    const parsedMed = parseAppMessage(medEncoded, "text");
+    expect(parsedMed.text?.length).toBe(600);
+  });
+
   it("classifies relayed frames without trusting them", async () => {
     const { alice, bob } = await world();
     const env = await send(alice, bob, "hello");

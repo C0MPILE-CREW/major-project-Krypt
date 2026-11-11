@@ -114,4 +114,67 @@ describe("file:chunk relay", () => {
     expect(await relay(alice, frame())).toEqual({ ok: false, error: "SERVER_ERROR" });
     spy.mockRestore();
   });
+
+  it("cleans inactive senders from memory when idle", async () => {
+    const { relay, advance } = setup();
+    expect((await relay(alice, frame({ transferId: tid(1) }))).ok).toBe(true);
+    expect(relay.activeSenderCount()).toBe(1);
+    advance(TRANSFER_IDLE_MS + 1000);
+    relay.cleanupInactive();
+    expect(relay.activeSenderCount()).toBe(0);
+  });
+
+  it("enforces global active transfer limits across multiple senders", async () => {
+    let t = 0;
+    const relay = createFileChunkRelay({
+      policy: async () => "ok",
+      emitToUser: () => true,
+      now: () => t,
+      globalMaxActiveTransfers: 3,
+    });
+    const u1 = { userId: "u1", username: "user1" };
+    const u2 = { userId: "u2", username: "user2" };
+    const u3 = { userId: "u3", username: "user3" };
+    const u4 = { userId: "u4", username: "user4" };
+
+    expect((await relay(u1, frame({ transferId: tid(1) }))).ok).toBe(true);
+    expect((await relay(u2, frame({ transferId: tid(2) }))).ok).toBe(true);
+    expect((await relay(u3, frame({ transferId: tid(3) }))).ok).toBe(true);
+    // 4th transfer exceeds global limit of 3
+    expect(await relay(u4, frame({ transferId: tid(4) }))).toEqual({
+      ok: false,
+      error: "TOO_MANY_TRANSFERS",
+    });
+  });
+
+  it("handles backpressure for congested recipients", async () => {
+    let backpressured = true;
+    const relay = createFileChunkRelay({
+      policy: async () => "ok",
+      emitToUser: () => true,
+      isBackpressured: (to) => to === "bob" && backpressured,
+    });
+    expect(await relay(alice, frame({ to: "bob" }))).toEqual({ ok: false, error: "RATE_LIMITED" });
+    backpressured = false;
+    expect(await relay(alice, frame({ to: "bob" }))).toEqual({ ok: true });
+  });
+
+  it("supports custom/shared limiters for horizontal scaling", async () => {
+    let takeCount = 0;
+    const customLimiter = {
+      take: () => {
+        takeCount++;
+        return true;
+      },
+    };
+    const relay = createFileChunkRelay({
+      policy: async () => "ok",
+      emitToUser: () => true,
+      limiters: {
+        frames: customLimiter,
+      },
+    });
+    expect(await relay(alice, frame())).toEqual({ ok: true });
+    expect(takeCount).toBeGreaterThan(0);
+  });
 });

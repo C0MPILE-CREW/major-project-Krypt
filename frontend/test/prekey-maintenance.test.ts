@@ -110,6 +110,7 @@ async function bobMessagesAlice(server: FakeServer, prekeys: MemoryPrekeyStore) 
         throw new Error("alice does not initiate here");
       },
       fetchIdentity: async () => bobKey,
+      trustIdentity: async () => true,
       lock: createMutexLock(),
     }),
   };

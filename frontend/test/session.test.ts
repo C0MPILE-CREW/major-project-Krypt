@@ -13,6 +13,7 @@ import {
   copy,
   expectRejected,
   flipB64,
+  makeParty,
   managerFor,
   recv,
   rng,
@@ -609,4 +610,40 @@ describe("saved sessions from removed suites", () => {
       await expectRejected(bob, stale, "SESSION_CLOSED");
     });
   }
+});
+
+describe("identity trust: fail closed", () => {
+  it("constructor requires trustIdentity verifier function", async () => {
+    const { alice } = await world();
+    expect(
+      () =>
+        new (alice.sm.constructor as unknown as new (opts: unknown) => unknown)({
+          self: { username: "carol", identity: alice.identity },
+          store: alice.store,
+          prekeys: alice.prekeys,
+          fetchBundle: async () => ({}),
+          fetchIdentity: async () => "",
+        }),
+    ).toThrow("SessionManager requires an identity trust verifier");
+  });
+
+  it("initiator fails closed if peer identity is refused by trustIdentity", async () => {
+    const { alice } = await world({
+      trustIdentity: async () => false,
+    });
+    await expect(alice.sm.encrypt("bob", te.encode("hi"), "text")).rejects.toMatchObject({
+      name: "HandshakeError",
+      code: "UNTRUSTED_IDENTITY",
+    });
+  });
+
+  it("responder fails closed if initiator identity is refused by trustIdentity", async () => {
+    // Alice trusts Bob, but Bob refuses Alice
+    const { alice, dir } = await world();
+    const bob = await makeParty(dir, "bob", {
+      trustIdentity: async () => false,
+    });
+    const env = await alice.sm.encrypt("bob", te.encode("hi"), "text");
+    await expectRejected(bob, env, "UNTRUSTED_IDENTITY");
+  });
 });

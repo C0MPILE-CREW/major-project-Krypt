@@ -24,10 +24,16 @@ import { parseFileControl, type FileControl } from "./fileManifest";
 import { MAX_SOCKET_MESSAGE_BYTES, parseAttachmentMeta, type AttachmentMeta } from "./media";
 
 export const WIRE_TYPE = "krypt-v1";
-export type ChatContentType = "text" | "image" | "audio" | "file";
+export type ChatContentType = "text" | "image" | "audio" | "file" | "cover";
 export const MAX_TEXT_CHARS = 64 * 1024;
 /** socket.io framing around the JSON payload (`42<ack>["private_message",...]`). */
 const FRAME_OVERHEAD = 64;
+
+/**
+ * Standard power-of-2 / bucket sizes (bytes) for uniform message padding.
+ * Masks message lengths and typing cadence against traffic-analysis eavesdroppers.
+ */
+export const PADDING_BUCKETS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536];
 
 export interface KtGossip {
   treeSize: number;
@@ -42,6 +48,7 @@ export interface AppMessage {
   file?: AttachmentMeta;
   ctl?: FileControl;
   kt?: KtGossip;
+  padding?: string;
 }
 
 export interface WirePayload {
@@ -52,11 +59,35 @@ export interface WirePayload {
 }
 
 export function isChatContentType(x: string): x is ChatContentType {
-  return x === "text" || x === "image" || x === "audio" || x === "file";
+  return x === "text" || x === "image" || x === "audio" || x === "file" || x === "cover";
 }
 
-export function encodeAppMessage(m: AppMessage): Uint8Array {
-  return utf8(JSON.stringify(m));
+/** Finds the smallest padding bucket >= len. */
+export function padToBucket(len: number): number {
+  for (const b of PADDING_BUCKETS) {
+    if (b >= len) return b;
+  }
+  return Math.ceil(len / 4096) * 4096;
+}
+
+/**
+ * Encodes an AppMessage to UTF-8 JSON.
+ * When `pad` is true (the default), pads the JSON with a dummy "padding" field to
+ * a uniform bucket boundary (min 512 bytes). Short text, file controls, and
+ * dummy cover messages all produce identical 512-byte payloads (+16 bytes AES-GCM tag).
+ */
+export function encodeAppMessage(m: AppMessage, pad = true): Uint8Array {
+  if (!pad) {
+    return utf8(JSON.stringify(m));
+  }
+  const clone: AppMessage = { ...m };
+  delete clone.padding;
+  const baseJson = JSON.stringify(clone);
+  const baseLen = utf8(baseJson).length;
+  const target = padToBucket(baseLen + 16);
+  const padChars = Math.max(0, target - baseLen - 13);
+  clone.padding = "0".repeat(padChars);
+  return utf8(JSON.stringify(clone));
 }
 
 /** Parses and checks a decrypted plaintext against the header's contentType. */
@@ -72,7 +103,10 @@ export function parseAppMessage(bytes: Uint8Array, contentType: string): AppMess
     throw new Error("message body has the wrong shape");
   }
   const m: AppMessage = { v: 1, id: o.id, sentAt: o.sentAt };
-  if (contentType === "text") {
+  if (contentType === "cover") {
+    // Dummy cover message: silently absorbed by the receiver to advance ratchets without UI effects.
+    return m;
+  } else if (contentType === "text") {
     if (typeof o.text !== "string" || o.text.length > MAX_TEXT_CHARS) throw new Error("text message has no text");
     m.text = o.text;
   } else if (contentType === "file") {

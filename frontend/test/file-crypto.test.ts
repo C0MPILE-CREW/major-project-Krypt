@@ -17,7 +17,12 @@ import {
   u64,
   type FileManifestV1,
 } from "../src/crypto/fileManifest";
-import { decryptFileChunk, encryptFileChunk, importFileKey } from "../src/crypto/fileTransfer";
+import {
+  computeFileFingerprint,
+  decryptFileChunk,
+  encryptFileChunk,
+  importFileKey,
+} from "../src/crypto/fileTransfer";
 import { encodeAppMessage, parseAppMessage } from "../src/crypto/appMessage";
 import { parseFileControl } from "../src/crypto/fileManifest";
 
@@ -127,7 +132,7 @@ describe("chunk encryption", () => {
   });
 
   it("rejects a changed chunk, tag, index, counter, transfer, sender or recipient", async () => {
-    const { a, seal, open } = await setup();
+    const { a, key, seal, open } = await setup();
     const ct = await seal(2, 5);
     const flipped = (i: number) => {
       const c = ct.slice();
@@ -143,6 +148,21 @@ describe("chunk encryption", () => {
     await expect(open(ct, 2, 5, { ...a, transferId: m().transferId })).rejects.toThrow();
     await expect(open(ct, 2, 5, a, "mallory")).rejects.toThrow();
     await expect(open(ct, 2, 5, a, "alice", "carol")).rejects.toThrow();
+
+    // Tampering with any byte of the AAD causes GCM authentication failure
+    const baseAad = chunkAad(a, "alice", "bob", 2, 5);
+    for (const offset of [0, 10, 20, 30, baseAad.length - 1]) {
+      const tampered = baseAad.slice();
+      tampered[offset] ^= 1;
+      await expect(
+        decryptFileChunk({
+          fileKey: key,
+          nonce: chunkNonce(a, 5),
+          ciphertextAndTag: ct,
+          aad: tampered,
+        }),
+      ).rejects.toThrow();
+    }
   });
 
   it("does not decrypt under another transfer's key", async () => {
@@ -191,5 +211,21 @@ describe("control messages", () => {
   ])("reject %s", (_n, ctl) => {
     expect(() => parseFileControl(ctl)).toThrow(/malformed/);
     expect(() => parseAppMessage(encodeAppMessage({ v: 1, id: "z", sentAt: 1, ctl: ctl as never }), "file")).toThrow();
+  });
+});
+
+describe("computeFileFingerprint", () => {
+  it("incrementally computes deterministic SHA-256 fingerprint", async () => {
+    const b1 = new Uint8Array([1, 2, 3, 4, 5]);
+    const blob1 = new Blob([b1]);
+    const fp1 = await computeFileFingerprint(blob1, 2);
+    const fp2 = await computeFileFingerprint(new Blob([b1]), 3);
+    expect(fp1).toBe(fp2);
+    expect(typeof fp1).toBe("string");
+    expect(fp1.length).toBeGreaterThan(20);
+
+    const blob2 = new Blob([new Uint8Array([1, 2, 3, 4, 6])]);
+    const fp3 = await computeFileFingerprint(blob2, 2);
+    expect(fp3).not.toBe(fp1);
   });
 });

@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Copies ../shared/src/*.ts into src/vendor/krypt-shared/ so the backend can
 // import the KT package with its own tsc build (rootDir ./src).
 //

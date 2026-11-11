@@ -120,7 +120,7 @@ export class Protocol {
     this.sessions = new IndexedDbSessionStore({ key: storeKey, dbName: sessionDbName(username) });
     this.prekeys = new IndexedDbPrekeyStore({ key: storeKey, dbName: prekeyDbName(username) });
     this.messageState = new IndexedDbMessageState({ key: storeKey, dbName: messageStateDbName(username), lock: appLock });
-    this.files = new FileStore({ key: storeKey, dbName: filesDbName(username) });
+    this.files = new FileStore({ key: storeKey, dbName: filesDbName(username), lock: appLock });
     this.manager = new SessionManager({
       self: {
         username: this.username,
