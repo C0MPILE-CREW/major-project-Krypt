@@ -42,3 +42,4 @@ describe("Media Attachment Security & MIME Type Whitelisting", () => {
     expect(() => parseAttachmentMeta(raw)).toThrow(AttachmentError);
   });
 });
+

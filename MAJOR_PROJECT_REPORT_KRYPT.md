@@ -1,4 +1,4 @@
-# Krypt: Absolute Post-Quantum Security
+﻿# Krypt: Absolute Post-Quantum Security
 ## MAJOR PROJECT REPORT
 Submitted in partial fulfillment for the award of the degree of
 ### BACHELOR OF TECHNOLOGY
