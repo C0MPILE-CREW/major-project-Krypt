@@ -14,7 +14,9 @@ function parseFileCardInfo(raw: string): FileCardInfo | null {
     ) {
       return parsed as FileCardInfo;
     }
-  } catch {}
+  } catch {
+    return null;
+  }
   return null;
 }
 

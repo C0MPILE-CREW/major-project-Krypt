@@ -9,6 +9,7 @@ import {
 
 describe("Media Attachment Security & MIME Type Whitelisting", () => {
   it("recognizes safe raster and audio formats", () => {
+    expect(ALLOWED_MEDIA_MIME_TYPES.has("image/png")).toBe(true);
     expect(isSafeMediaMime("image/png")).toBe(true);
     expect(isSafeMediaMime("image/jpeg")).toBe(true);
     expect(isSafeMediaMime("image/webp")).toBe(true);
