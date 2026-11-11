@@ -11,7 +11,22 @@ export const ALLOWED_ORIGINS = process.env.FRONTEND_URL
 
 export function createApp() {
   const app = express();
-  app.use(helmet());
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", "data:", "blob:"],
+          connectSrc: ["'self'", ...ALLOWED_ORIGINS, "wss:", "ws:"],
+          objectSrc: ["'none'"],
+          baseUri: ["'self'"],
+        },
+      },
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
   app.use(
     cors({
       origin: ALLOWED_ORIGINS,

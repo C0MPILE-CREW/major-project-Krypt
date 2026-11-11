@@ -2,6 +2,22 @@ import React, { useRef, useEffect } from "react";
 import type { FileCardInfo, StoredMessage } from "../services/messaging";
 import FileTransferCard from "./FileTransferCard";
 
+function parseFileCardInfo(raw: string): FileCardInfo | null {
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as FileCardInfo).transferId === "string" &&
+      typeof (parsed as FileCardInfo).name === "string" &&
+      typeof (parsed as FileCardInfo).size === "number"
+    ) {
+      return parsed as FileCardInfo;
+    }
+  } catch {}
+  return null;
+}
+
 interface ChatWindowProps {
   user: string;
   activeChat: string | null;
@@ -130,7 +146,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                             loading="lazy"
                           />
                         ) : msg.type === "file" ? (
-                          <FileTransferCard info={JSON.parse(msg.decryptedText) as FileCardInfo} />
+                          (() => {
+                            const info = parseFileCardInfo(msg.decryptedText);
+                            return info ? (
+                              <FileTransferCard info={info} />
+                            ) : (
+                              <p className="text-xs text-red-400 italic px-2 py-1">
+                                Malformed file transfer card
+                              </p>
+                            );
+                          })()
                         ) : msg.type === "audio" ? (
                           <audio
                             controls

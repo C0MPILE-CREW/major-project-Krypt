@@ -386,11 +386,14 @@ async function processIncoming(raw: unknown) {
     display = msg.text ?? "";
   }
 
+  const storedType: ChatContentType =
+    result.contentType === "file" && !msg.ctl ? "text" : (result.contentType as ChatContentType);
+
   await storeMessage(p.keys, {
     from: peer,
     to: p.username,
     decryptedText: display,
-    type: result.contentType as ChatContentType,
+    type: storedType,
     timestamp: Date.now(),
     msgId: msg.id,
   });

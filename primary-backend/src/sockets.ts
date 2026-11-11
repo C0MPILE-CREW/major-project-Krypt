@@ -93,6 +93,22 @@ async function bringOnline(io: Server, socket: Socket, username: string) {
 export function registerSocketHandlers(io: Server, evil: EvilRelay | null = null) {
   setIo(io);
   io.use(socketAuth);
+  io.use(async (socket, next) => {
+    if (socket.data.tokenVersion !== undefined && socket.data.userId) {
+      try {
+        const user = await prisma.user.findUnique({
+          where: { id: socket.data.userId },
+          select: { tokenVersion: true },
+        });
+        if (user && user.tokenVersion !== socket.data.tokenVersion) {
+          return next(new Error("unauthorized"));
+        }
+      } catch {
+        // pass through on db check error
+      }
+    }
+    next();
+  });
   if (evil) setBundleKeySource(evil.keySource);
   const relayFileChunk = createFileChunkRelay({ policy: messagePolicy, emitToUser });
 

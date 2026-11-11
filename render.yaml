@@ -31,3 +31,4 @@ databases:
     region: oregon
     databaseName: db_name
     user: krypt
+

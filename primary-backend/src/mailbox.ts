@@ -24,6 +24,13 @@ export interface MailboxStore {
   /** Rows and payload bytes waiting for `to` that are newer than notBefore. */
   usage(to: string, notBefore: Date): Promise<{ count: number; bytes: number }>;
   insert(row: { to: string; from: string; payload: unknown; bytes: number }): Promise<void>;
+  /** Atomic quota check and insertion for concurrency safety. */
+  atomicEnqueue?(
+    row: { to: string; from: string; payload: unknown; bytes: number },
+    notBefore: Date,
+    maxQuota: number,
+    maxBytes: number,
+  ): Promise<EnqueueResult>;
   /** Oldest first (createdAt, then id), only rows newer than notBefore. */
   fetch(to: string, notBefore: Date, limit: number): Promise<QueuedMessage[]>;
   deleteIds(ids: string[]): Promise<void>;
@@ -44,6 +51,9 @@ export async function enqueue(
 ): Promise<EnqueueResult> {
   const notBefore = new Date(now - MAILBOX_TTL_MS);
   const bytes = payloadBytes(row.payload);
+  if (store.atomicEnqueue) {
+    return store.atomicEnqueue({ ...row, bytes }, notBefore, MAILBOX_QUOTA, MAILBOX_BYTE_QUOTA);
+  }
   const waiting = await store.usage(row.to, notBefore);
   if (waiting.count >= MAILBOX_QUOTA || waiting.bytes + bytes > MAILBOX_BYTE_QUOTA) {
     return "mailbox_full";
@@ -96,6 +106,20 @@ export function prismaMailboxStore(prisma: PrismaClient): MailboxStore {
     },
     insert: async ({ to, from, payload, bytes }) => {
       await prisma.offlineMessage.create({ data: { to, from, payload: payload as object, bytes } });
+    },
+    atomicEnqueue: async ({ to, from, payload, bytes }, notBefore, maxQuota, maxBytes) => {
+      return await prisma.$transaction(async (tx) => {
+        const r = await tx.offlineMessage.aggregate({
+          where: { to, createdAt: { gte: notBefore } },
+          _count: { _all: true },
+          _sum: { bytes: true },
+        });
+        if (r._count._all >= maxQuota || (r._sum.bytes ?? 0) + bytes > maxBytes) {
+          return "mailbox_full";
+        }
+        await tx.offlineMessage.create({ data: { to, from, payload: payload as object, bytes } });
+        return "queued";
+      });
     },
     fetch: (to, notBefore, limit) =>
       prisma.offlineMessage.findMany({

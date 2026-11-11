@@ -9,11 +9,13 @@ import type { Socket } from "socket.io";
 export interface AuthIdentity {
   userId: string;
   username: string;
+  tokenVersion?: number;
 }
 
 export interface TokenPayload {
   sub: string;
   usr: string;
+  v?: number;
   iat: number;
   exp: number;
 }
@@ -71,6 +73,9 @@ export function issueToken(identity: AuthIdentity, opts: TokenOptions = {}): str
     iat,
     exp: iat + (opts.ttlSeconds ?? getTtlSeconds()),
   };
+  if (identity.tokenVersion !== undefined) {
+    payload.v = identity.tokenVersion;
+  }
   const firstPart = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const mac = sign(firstPart, opts.secret ?? getSecret()).toString("base64url");
   return `${firstPart}.${mac}`;
@@ -99,7 +104,7 @@ export function verifyToken(
     return null;
   }
   if (!payload || typeof payload !== "object") return null;
-  const { sub, usr, iat, exp } = payload as Record<string, unknown>;
+  const { sub, usr, v, iat, exp } = payload as Record<string, unknown>;
   if (
     typeof sub !== "string" ||
     typeof usr !== "string" ||
@@ -109,7 +114,11 @@ export function verifyToken(
     return null;
   }
   if (exp <= (opts.now ?? nowSeconds())) return null;
-  return { userId: sub, username: usr };
+  const identity: AuthIdentity = { userId: sub, username: usr };
+  if (typeof v === "number") {
+    identity.tokenVersion = v;
+  }
+  return identity;
 }
 
 export function readBearerToken(header: unknown): string | null {
@@ -137,6 +146,7 @@ export function socketAuth(socket: Socket, next: (err?: Error) => void) {
   }
   socket.data.userId = identity.userId;
   socket.data.username = identity.username;
+  socket.data.tokenVersion = identity.tokenVersion;
   next();
 }
 

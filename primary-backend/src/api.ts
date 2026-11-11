@@ -1,10 +1,12 @@
 import { Router, type Request } from "express";
+import { createHmac, randomBytes } from "crypto";
 import { prisma } from "./db.js";
 import srp from "secure-remote-password/server.js";
 import { issueToken, requireAuth, sameUsername } from "./auth.js";
 import { ktApiRouter } from "./ktRoutes.js";
 import prekeys from "./prekeys.js";
 import { emitToUser } from "./realtime.js";
+import { SlidingWindowLimiter } from "./rateLimit.js";
 import {
   acceptOrRejectBody,
   blockBody,
@@ -19,14 +21,47 @@ import { invalidateRelationship } from "./social.js";
 const router = Router();
 
 // SRP login challenges.
-// Decision: keep keying by username so the existing client (which sends only
-// username + A to /login/verify) keeps working. A new /login/challenge for the
-// same user overwrites the old one, each challenge lives 2 minutes, and it is
-// single use: the first /login/verify attempt consumes it, pass or fail.
-// A challenge-id scheme would stop one login from cancelling another's
-// challenge, but needs a client change; today an overwrite only costs a retry.
-const activeLoginChallenges = new Map<string, { ephemeralSecret: string; createdAt: number }>();
+// Keyed both by challengeId (preventing login cancellation) and by username
+// (for backwards compatibility with existing clients).
+interface LoginChallengeRecord {
+  username: string;
+  ephemeralSecret: string;
+  createdAt: number;
+  isSynthetic: boolean;
+}
+
+const activeLoginChallenges = new Map<string, LoginChallengeRecord>();
 const CHALLENGE_TTL_MS = 2 * 60 * 1000;
+
+// Rate limiters:
+// - Registration: max 20 registrations per hour per IP
+// - Login challenge: max 100 per minute per IP
+// - Login verify: max 10 failed verifications per 10 minutes per IP+username
+const registerLimiter = new SlidingWindowLimiter(20, 60 * 60 * 1000);
+const loginChallengeLimiter = new SlidingWindowLimiter(100, 60 * 1000);
+const loginVerifyLimiter = new SlidingWindowLimiter(10, 10 * 60 * 1000);
+
+function clientIp(req: Request): string {
+  return (
+    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+    req.ip ||
+    req.socket.remoteAddress ||
+    "unknown"
+  );
+}
+
+function getSyntheticSrpCredentials(username: string): { salt: string; verifier: string } {
+  const secret = process.env.AUTH_TOKEN_SECRET || "synthetic-srp-salt-secret";
+  const salt = createHmac("sha256", secret).update(`srp:salt:${username.toLowerCase()}`).digest("hex");
+  const verifierBuf = Buffer.alloc(256);
+  for (let i = 0; i < 8; i++) {
+    createHmac("sha256", secret)
+      .update(`srp:verifier:${username.toLowerCase()}:${i}`)
+      .digest()
+      .copy(verifierBuf, i * 32);
+  }
+  return { salt, verifier: verifierBuf.toString("hex") };
+}
 
 function cleanupExpiredChallenges() {
   const now = Date.now();
@@ -62,6 +97,11 @@ const usernameOnly = { select: { username: true } } as const;
 
 // Register a new user
 router.post("/register", async (req, res) => {
+  const ip = clientIp(req);
+  if (!registerLimiter.take(ip)) {
+    return res.status(429).json({ error: "Too many registration requests. Please try again later." });
+  }
+
   const body = parseOr400(registerBody, req.body, res);
   if (!body) return;
 
@@ -77,7 +117,7 @@ router.post("/register", async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Zero-Knowledge Identity Created",
-      token: issueToken({ userId: newUser.id, username: newUser.username }),
+      token: issueToken({ userId: newUser.id, username: newUser.username, tokenVersion: newUser.tokenVersion }),
     });
   } catch (error: any) {
     if (error?.code === "P2002") {
@@ -93,6 +133,11 @@ router.post("/register", async (req, res) => {
 
 // SRP login step 1: generate challenge
 router.post("/login/challenge", async (req, res) => {
+  const ip = clientIp(req);
+  if (!loginChallengeLimiter.take(ip)) {
+    return res.status(429).json({ error: "Too many login challenge requests. Please try again later." });
+  }
+
   const body = parseOr400(loginChallengeBody, req.body, res);
   if (!body) return;
   const { username } = body;
@@ -100,41 +145,71 @@ router.post("/login/challenge", async (req, res) => {
   cleanupExpiredChallenges();
 
   const user = await prisma.user.findUnique({ where: { username } });
-  if (!user || !user.srpSalt || !user.srpVerifier) {
-    return res.status(404).json({ error: "User not found or missing SRP credentials." });
-  }
+  const isSynthetic = !user || !user.srpSalt || !user.srpVerifier;
+  const creds = isSynthetic
+    ? getSyntheticSrpCredentials(username)
+    : { salt: user.srpSalt, verifier: user.srpVerifier };
 
-  const serverEphemeral = srp.generateEphemeral(user.srpVerifier);
-  activeLoginChallenges.set(username, {
+  const serverEphemeral = srp.generateEphemeral(creds.verifier);
+  const challengeId = randomBytes(16).toString("base64url");
+  const challengeRecord: LoginChallengeRecord = {
+    username,
     ephemeralSecret: serverEphemeral.secret,
     createdAt: Date.now(),
-  });
+    isSynthetic,
+  };
+
+  activeLoginChallenges.set(challengeId, challengeRecord);
+  activeLoginChallenges.set(username, challengeRecord);
 
   res.status(200).json({
-    salt: user.srpSalt,
+    challengeId,
+    salt: creds.salt,
     serverEphemeralPublic: serverEphemeral.public,
   });
 });
 
 // SRP login step 2: verify client proof
 router.post("/login/verify", async (req, res) => {
+  const ip = clientIp(req);
   const body = parseOr400(loginVerifyBody, req.body, res);
   if (!body) return;
-  const { username, clientEphemeralPublic, clientSessionProof } = body;
+  const { username, challengeId, clientEphemeralPublic, clientSessionProof } = body;
 
   cleanupExpiredChallenges();
 
   // Single use: consume the challenge before checking anything else.
-  const challengeData = activeLoginChallenges.get(username);
-  activeLoginChallenges.delete(username);
-  const user = await prisma.user.findUnique({ where: { username } });
+  const challengeData =
+    (challengeId ? activeLoginChallenges.get(challengeId) : null) ??
+    activeLoginChallenges.get(username);
 
-  if (!user || !challengeData) {
+  if (challengeId) activeLoginChallenges.delete(challengeId);
+  activeLoginChallenges.delete(username);
+
+  const rateKey = `${ip}:${username.toLowerCase()}`;
+
+  if (!challengeData) {
     return res.status(400).json({ error: "Login session expired or invalid." });
   }
 
   if (Date.now() - challengeData.createdAt > CHALLENGE_TTL_MS) {
     return res.status(400).json({ error: "Login challenge has expired. Please try again." });
+  }
+
+  // Check rate limit on verify
+  if (!loginVerifyLimiter.take(rateKey, 0)) {
+    return res.status(429).json({ error: "Too many failed login attempts. Please try again later." });
+  }
+
+  if (challengeData.isSynthetic) {
+    loginVerifyLimiter.take(rateKey, 1);
+    return res.status(401).json({ error: "Invalid username or password." });
+  }
+
+  const user = await prisma.user.findUnique({ where: { username } });
+  if (!user || !user.srpSalt || !user.srpVerifier) {
+    loginVerifyLimiter.take(rateKey, 1);
+    return res.status(401).json({ error: "Invalid username or password." });
   }
 
   // deriveSession throws if the client proof (M1) is wrong.
@@ -149,16 +224,30 @@ router.post("/login/verify", async (req, res) => {
       clientSessionProof,
     ).proof;
   } catch {
+    loginVerifyLimiter.take(rateKey, 1);
     console.error("[SRP] Verification Failed.");
-    return res.status(401).json({ error: "Invalid password." });
+    return res.status(401).json({ error: "Invalid username or password." });
   }
 
   // The password was verified. Return M2 and a session token.
   res.status(200).json({
     success: true,
     serverProof,
-    token: issueToken({ userId: user.id, username: user.username }),
+    token: issueToken({ userId: user.id, username: user.username, tokenVersion: user.tokenVersion }),
   });
+});
+
+// Revoke all existing sessions for the authenticated user
+router.post("/auth/revoke", requireAuth, async (req, res) => {
+  try {
+    await prisma.user.update({
+      where: { id: myId(req) },
+      data: { tokenVersion: { increment: 1 } },
+    });
+    res.status(200).json({ success: true, message: "All sessions revoked." });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to revoke sessions." });
+  }
 });
 
 // ===================== Authenticated routes =====================

@@ -44,6 +44,7 @@ export const loginChallengeBody = z.object({
 
 export const loginVerifyBody = z.object({
   username: usernameSchema,
+  challengeId: z.string().min(1).max(128).optional(),
   clientEphemeralPublic: hexString(4096),
   clientSessionProof: hexString(256),
 });

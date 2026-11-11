@@ -168,7 +168,7 @@ export function useAuth() {
           const data = await challengeRes.json();
           throw new Error(data.error || "Login failed: User not found.");
         }
-        const { salt, serverEphemeralPublic } = await challengeRes.json();
+        const { challengeId, salt, serverEphemeralPublic } = await challengeRes.json();
 
         const privateKey = srp.derivePrivateKey(salt, username, password);
         const clientSession = srp.deriveSession(
@@ -181,6 +181,7 @@ export function useAuth() {
 
         const verifyRes = await apiPostJson("/api/login/verify", {
           username,
+          challengeId,
           clientEphemeralPublic: clientEphemeral.public,
           clientSessionProof: clientSession.proof,
         });

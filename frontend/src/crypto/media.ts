@@ -49,6 +49,28 @@ export class AttachmentError extends Error {
   }
 }
 
+export const ALLOWED_MEDIA_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+  "audio/webm",
+  "audio/ogg",
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/aac",
+  "audio/flac",
+  "audio/x-m4a",
+  "audio/mp4",
+]);
+
+export function isSafeMediaMime(mime: string): boolean {
+  const base = mime.split(";")[0]?.trim().toLowerCase() ?? "";
+  return ALLOWED_MEDIA_MIME_TYPES.has(base);
+}
+
 const aad = (mime: string) => lp("krypt-attachment-v1", mime);
 
 export function formatBytes(n: number): string {
@@ -71,6 +93,9 @@ export async function encryptAttachment(
   what = "File",
 ): Promise<{ meta: AttachmentMeta; ciphertext: Uint8Array }> {
   assertAttachmentFits(data.length, what);
+  if (!isSafeMediaMime(mime)) {
+    throw new AttachmentError(`Unsupported or unsafe attachment media type: ${mime}`);
+  }
   const rawKey = crypto.getRandomValues(new Uint8Array(32));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await aesGcmEncrypt(rawKey, iv, data, aad(mime));
@@ -97,6 +122,7 @@ export function parseAttachmentMeta(x: unknown): AttachmentMeta {
     typeof m.mime !== "string" ||
     m.mime.length === 0 ||
     m.mime.length > 100 ||
+    !isSafeMediaMime(m.mime) ||
     typeof m.size !== "number" ||
     !Number.isSafeInteger(m.size) ||
     m.size < 0 ||
