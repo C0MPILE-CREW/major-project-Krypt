@@ -235,6 +235,35 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               messages
                 .filter((m) => m.to === activeChat || m.from === activeChat)
                 .map((msg, i) => {
+                  const isNotice =
+                    typeof msg.decryptedText === "string" &&
+                    (msg.decryptedText.startsWith("[Session Notice:") ||
+                      msg.decryptedText.startsWith("[Session Reset:") ||
+                      msg.decryptedText.startsWith("[Session Re-established:"));
+
+                  if (isNotice) {
+                    const noticeText = msg.decryptedText
+                      .replace(/^\[(Session Notice|Session Reset|Session Re-established):\s*/, "")
+                      .replace(/\]$/, "");
+                    const isReestablished = msg.decryptedText.startsWith("[Session Re-established:");
+                    return (
+                      <div key={msg.id ?? i} className="w-full my-4 flex justify-center">
+                        <div
+                          className={`px-4 py-2 rounded-xl text-xs max-w-[85%] text-center shadow-sm flex items-center gap-2 border ${
+                            isReestablished
+                              ? "bg-emerald-950/40 border-emerald-600/40 text-emerald-200"
+                              : "bg-amber-950/40 border-amber-600/40 text-amber-200"
+                          }`}
+                        >
+                          <span className={isReestablished ? "text-emerald-400" : "text-amber-400"}>
+                            {isReestablished ? "🔒" : "⚡"}
+                          </span>
+                          <span className="font-medium leading-relaxed">{noticeText}</span>
+                        </div>
+                      </div>
+                    );
+                  }
+
                   const isMe = msg.from === user;
                   return (
                     <div

@@ -90,6 +90,7 @@ export interface FileCardInfo {
 }
 
 export async function storeMessage(keys: UserIdentityKeys, m: StoredMessage) {
+  if (!keys || !keys.kemSecretKey) return;
   await db.messages.add({ payload: await encryptLocal(JSON.stringify(m), keys) });
 }
 
@@ -367,6 +368,17 @@ export async function resendAfterSessionSwitch(p: Protocol, peer: string, sessio
   if (!box) return;
   if (box.sessionId === sessionId) return;
   toast(`Your session with ${peer} was replaced. Re-sending ${box.items.length} message(s).`, { icon: "🔁" });
+  try {
+    await storeMessage(p.keys, {
+      from: peer,
+      to: p.username,
+      decryptedText: `[Session Notice: Session with ${peer} was re-synchronized. Re-sending ${box.items.length} unacknowledged message(s)...]`,
+      type: "text",
+      timestamp: Date.now(),
+    });
+  } catch (storeErr) {
+    console.warn("[Krypt] Failed to record session switch notice:", storeErr);
+  }
   for (const item of box.items) {
     try {
       const { sessionId: sid } = await transmit(p, peer, item);
@@ -381,6 +393,8 @@ export async function resendAfterSessionSwitch(p: Protocol, peer: string, sessio
 // Receiving
 
 let queue: Promise<void> = Promise.resolve();
+const lastAutoSync = new Map<string, number>();
+const AUTO_SYNC_COOLDOWN_MS = 15_000;
 
 /** Adds a relayed frame to the FIFO receive queue. */
 export function enqueueIncoming(raw: unknown) {
@@ -400,6 +414,33 @@ async function processIncoming(raw: unknown) {
     result = await p.session.decrypt(frame.envelope);
   } catch (err) {
     reportDecryptError(err, frame.from);
+
+    if (err instanceof DecryptError && err.code === "UNKNOWN_SESSION") {
+      const peer = frame.from;
+      try {
+        await storeMessage(p.keys, {
+          from: peer,
+          to: p.username,
+          decryptedText: `[Session Notice: A message from ${peer} could not be decrypted because this device has no active session (e.g. new device login). Auto-initiating a fresh post-quantum session...]`,
+          type: "text",
+          timestamp: Date.now(),
+        });
+      } catch (storeErr) {
+        console.warn("[Krypt] Failed to record UNKNOWN_SESSION notice:", storeErr);
+      }
+
+      const now = Date.now();
+      const lastSync = lastAutoSync.get(peer) ?? 0;
+      if (now - lastSync >= AUTO_SYNC_COOLDOWN_MS) {
+        lastAutoSync.set(peer, now);
+        void sendChatMessage(p, peer, {
+          type: "text",
+          text: `[Session Re-established: Initialized a fresh post-quantum session after device synchronization.]`,
+        }).catch((e) => console.warn("[Krypt] Auto-session re-initiation failed:", e));
+      }
+      return;
+    }
+
     if (err instanceof DecryptError && err.code === "UNKNOWN_PREKEY") {
       try {
         await storeMessage(p.keys, {

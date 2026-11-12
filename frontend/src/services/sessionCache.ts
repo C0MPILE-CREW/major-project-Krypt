@@ -49,7 +49,8 @@ const cacheKey = (user: string) => `${CACHE_PREFIX}${user}`;
  * this tab's session as active. Replaces any previous cache for `user`.
  */
 export async function createSessionCache(user: string, bundle: string): Promise<void> {
-  const key = await window.crypto.subtle.generateKey(
+  const subtle = (globalThis.crypto ?? window.crypto).subtle;
+  const key = await subtle.generateKey(
     { name: "AES-GCM", length: 256 },
     false,
     ["encrypt", "decrypt"],

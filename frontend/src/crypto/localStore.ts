@@ -28,7 +28,8 @@ export async function getLocalKey(privateKey: UserIdentityKeys): Promise<CryptoK
   }
 
   // Derive local AES-256-GCM key using NIST SP 800-56C HKDF from KEM secret key
-  const ikm = await window.crypto.subtle.importKey(
+  const subtle = (globalThis.crypto ?? window.crypto).subtle;
+  const ikm = await subtle.importKey(
     "raw",
     privateKey.kemSecretKey as unknown as BufferSource,
     "HKDF",
@@ -36,7 +37,7 @@ export async function getLocalKey(privateKey: UserIdentityKeys): Promise<CryptoK
     ["deriveKey"],
   );
 
-  cachedLocalKey = await window.crypto.subtle.deriveKey(
+  cachedLocalKey = await subtle.deriveKey(
     {
       name: "HKDF",
       hash: "SHA-256",
