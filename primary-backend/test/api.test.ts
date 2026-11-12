@@ -181,4 +181,15 @@ describe("friend and block notifications", () => {
     expect((await post("/request/send", { receiver: "ghost" }, aliceToken)).status).toBe(404);
     expect(emitToUser).not.toHaveBeenCalled();
   });
+
+  it("allows DELETE and other methods in CORS preflight", async () => {
+    const res = await fetch(`${base}/prekeys/one-time`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://localhost:5173",
+        "Access-Control-Request-Method": "DELETE",
+      },
+    });
+    expect(res.headers.get("access-control-allow-methods")).toContain("DELETE");
+  });
 });

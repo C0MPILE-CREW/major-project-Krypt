@@ -30,7 +30,7 @@ export function createApp() {
   app.use(
     cors({
       origin: ALLOWED_ORIGINS,
-      methods: ["GET", "POST"],
+      methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
     }),
   );
   // A full 200-key prekey upload is ~1.65 MB of JSON; every other body is capped at 1 MB.
