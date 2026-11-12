@@ -1,6 +1,9 @@
 import React, { useRef, useEffect, useState } from "react";
 import type { FileCardInfo, StoredMessage } from "../services/messaging";
+import type { Protocol } from "../services/protocol";
 import FileTransferCard from "./FileTransferCard";
+import WireFrameInspector from "./WireFrameInspector";
+import CryptoInspectorModal from "./CryptoInspectorModal";
 
 function parseFileCardInfo(raw: string): FileCardInfo | null {
   try {
@@ -36,6 +39,7 @@ interface ChatWindowProps {
   onlineUsers: string[];
   mailboxEnabled?: boolean;
   onToggleMailbox?: () => void;
+  protocol?: Protocol | null;
 }
 
 const ChatWindow: React.FC<ChatWindowProps> = ({
@@ -54,9 +58,30 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   onlineUsers,
   mailboxEnabled = true,
   onToggleMailbox,
+  protocol,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [devMode, setDevMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("krypt_dev_mode") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [showInspectorModal, setShowInspectorModal] = useState(false);
+
+  const toggleDevMode = () => {
+    setDevMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("krypt_dev_mode", String(next));
+      } catch {
+        // ignore localStorage access errors
+      }
+      return next;
+    });
+  };
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -109,6 +134,30 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleDevMode}
+                className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition flex items-center gap-1.5 ${
+                  devMode
+                    ? "bg-indigo-950/80 border-indigo-500 text-indigo-300 shadow-sm shadow-indigo-500/20"
+                    : "bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-700"
+                }`}
+                title="Toggle Cryptographic Dev Mode (lowers abstraction to inspect FIPS 203 / 204 wire frames and ratchet states)"
+              >
+                <span>🔬</span>
+                <span>{devMode ? "Dev Mode: ON" : "Dev Mode"}</span>
+              </button>
+              {devMode && (
+                <button
+                  type="button"
+                  onClick={() => setShowInspectorModal(true)}
+                  className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600/90 hover:bg-indigo-500 text-white border border-indigo-400/40 shadow-sm flex items-center gap-1.5 transition"
+                  title="Open live post-quantum cryptographic inspector & diagnostic panel"
+                >
+                  <span>⚡</span>
+                  <span>Diagnostics</span>
+                </button>
+              )}
               {onToggleMailbox && (
                 <button
                   type="button"
@@ -140,6 +189,26 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           </div>
 
           <div className="flex-1 p-6 overflow-y-auto">
+            {devMode && (
+              <div className="mb-4 p-3 bg-slate-900/90 border border-indigo-500/40 rounded-xl flex items-center justify-between text-xs text-indigo-200 shadow-sm">
+                <div className="flex items-center gap-2.5">
+                  <span className="p-1.5 bg-indigo-500/20 border border-indigo-500/30 rounded-lg text-indigo-400">🔬</span>
+                  <div>
+                    <span className="font-bold text-white">Cryptographic Dev Mode Active</span>
+                    <span className="text-slate-400 block text-[11px] mt-0.5">
+                      Inspecting live NIST FIPS 203 (ML-KEM-1024), FIPS 204 (ML-DSA-87), blind relay views &amp; <em>K=4</em> ratchet steps.
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowInspectorModal(true)}
+                  className="px-2.5 py-1 text-[11px] font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition shadow-sm"
+                >
+                  Open Diagnostics →
+                </button>
+              </div>
+            )}
             {messages.filter(
               (m) => m.to === activeChat || m.from === activeChat,
             ).length === 0 ? (
@@ -212,6 +281,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                           </p>
                         )}
                       </div>
+                      {devMode && <WireFrameInspector msg={msg} isMe={isMe} />}
                       <div
                         className={`mt-1 flex items-center gap-2 text-[10px] text-slate-500 max-w-[75%] ${isMe ? "flex-row-reverse" : "flex-row"}`}
                       >
@@ -426,6 +496,13 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
             Search for a user in the sidebar to open a secure channel.
           </p>
         </div>
+      )}
+      {showInspectorModal && (
+        <CryptoInspectorModal
+          peer={activeChat}
+          protocol={protocol ?? null}
+          onClose={() => setShowInspectorModal(false)}
+        />
       )}
     </div>
   );

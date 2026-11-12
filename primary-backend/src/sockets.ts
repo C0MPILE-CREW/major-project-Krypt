@@ -82,7 +82,7 @@ export async function routeMessage(
  * Flush the mailbox, then mark the user online. A message sent while the flush
  * runs is queued (the user is not online yet), so flush once more afterwards.
  */
-async function bringOnline(io: Server, socket: Socket, username: string) {
+async function bringOnline(socket: Socket, username: string) {
   const deliver = (payload: unknown) => {
     if (!socket.connected) return false;
     socket.emit("receive_message", payload);
@@ -229,7 +229,7 @@ export function registerSocketHandlers(io: Server, evil: EvilRelay | null = null
       }
     });
 
-    void bringOnline(io, socket, username);
+    void bringOnline(socket, username);
   });
 }
 

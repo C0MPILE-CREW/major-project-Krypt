@@ -37,6 +37,7 @@ import { DecryptError, HandshakeError, type DecryptErrorCode } from "../crypto/e
 import type { FileControl } from "../crypto/fileManifest";
 import { encryptLocal } from "../crypto/localStore";
 import { AttachmentError, decryptAttachment, encryptAttachment } from "../crypto/media";
+import type { EnvelopeV1 } from "../crypto/envelope";
 import type { UserIdentityKeys } from "../crypto/mlkem";
 import { db } from "./db";
 import { FileTransferManager, type ChunkFrame, type ChunkSendResult } from "./fileTransfer";
@@ -44,6 +45,27 @@ import type { OutgoingItem } from "./messageState";
 import { resetOneTimePrekeysAfterUnknown } from "./prekeyMaintenance";
 import { appLock, protocolReady, type Protocol } from "./protocol";
 import { socket } from "./socket";
+
+export interface DevMessageMeta {
+  suite: string;
+  sessionId: string;
+  epoch: number;
+  n: number;
+  pn: number;
+  hasKemRatchet: boolean;
+  hasInitHandshake: boolean;
+  ciphertextSnippet: string;
+  bodyBytes: number;
+  ratchetStep: number;
+  ratchetThreshold: number;
+  relayView: {
+    to: string;
+    from: string;
+    type: string;
+    encryptedBytes: number;
+    blindRelayNote: string;
+  };
+}
 
 /** A message as kept (encrypted) in the local Dexie store and shown in the UI. */
 export interface StoredMessage {
@@ -56,6 +78,8 @@ export interface StoredMessage {
   timestamp: number;
   /** Application message id (v1). */
   msgId?: string;
+  /** Dev-mode live crypto wire inspection metadata */
+  devMeta?: DevMessageMeta;
 }
 
 /** What the chat shows for a file transfer; live status comes from the FileTransferManager. */
@@ -167,7 +191,12 @@ function emitPrivateMessage(payload: unknown, timeoutMs: number): Promise<{ succ
   });
 }
 
-async function transmit(p: Protocol, peer: string, item: Outgoing, allowOffline?: boolean): Promise<string> {
+async function transmit(
+  p: Protocol,
+  peer: string,
+  item: Outgoing,
+  allowOffline?: boolean,
+): Promise<{ sessionId: string; env: EnvelopeV1 }> {
   const msg: AppMessage = { ...item.msg };
   const gossip = p.kt.gossip();
   if (gossip) msg.kt = gossip;
@@ -181,7 +210,7 @@ async function transmit(p: Protocol, peer: string, item: Outgoing, allowOffline?
   const timeout = 20_000 + Math.ceil((item.attachment?.length ?? 0) / 50_000) * 1000;
   const ack = await emitPrivateMessage(payload, timeout);
   if (!ack.success) throw new RelayRejectedError(ack.reason ?? "unknown");
-  return env.sessionId;
+  return { sessionId: env.sessionId, env };
 }
 
 /** Keeps `item` for re-sending while its session is unconfirmed (persisted, survives a refresh). */
@@ -226,9 +255,39 @@ export async function sendChatMessage(
     item.attachment = ciphertext;
     display = toDataUrl(content.data, content.mime);
   }
-  const sessionId = await transmit(p, peer, item, allowOffline);
+  const { sessionId, env } = await transmit(p, peer, item, allowOffline);
   await track(p, peer, sessionId, item);
-  await storeMessage(p.keys, { from: p.username, to: peer, decryptedText: display, type: content.type, timestamp: msg.sentAt, msgId: msg.id });
+
+  const devMeta: DevMessageMeta = {
+    suite: env.suite === "mlkem1024" ? "ML-KEM-1024 (FIPS 203)" : env.suite,
+    sessionId: env.sessionId,
+    epoch: env.epoch,
+    n: env.n,
+    pn: env.pn,
+    hasKemRatchet: Boolean(env.kem),
+    hasInitHandshake: Boolean(env.init),
+    ciphertextSnippet: env.body ? env.body.slice(0, 48) + "..." : "encrypted",
+    bodyBytes: env.body ? env.body.length : 0,
+    ratchetStep: (env.n % 4) + 1,
+    ratchetThreshold: 4,
+    relayView: {
+      to: peer,
+      from: p.username,
+      type: "krypt.v1",
+      encryptedBytes: env.body ? env.body.length + (item.attachment?.length ?? 0) : 0,
+      blindRelayNote: "Relay observed zero plaintext, zero keys. Validated only (from, to, token).",
+    },
+  };
+
+  await storeMessage(p.keys, {
+    from: p.username,
+    to: peer,
+    decryptedText: display,
+    type: content.type,
+    timestamp: msg.sentAt,
+    msgId: msg.id,
+    devMeta,
+  });
 }
 
 /** Sends a dummy cover message to an online peer to mask traffic patterns. */
@@ -244,7 +303,7 @@ export async function sendCoverMessage(p: Protocol, peer: string): Promise<void>
 /** Sends one file control message as a normal v1 message (kept for re-send like any other). */
 async function sendFileControl(p: Protocol, peer: string, ctl: FileControl): Promise<void> {
   const item: Outgoing = { contentType: "file", msg: { v: 1, id: newId(), sentAt: Date.now(), ctl } };
-  const sessionId = await transmit(p, peer, item);
+  const { sessionId } = await transmit(p, peer, item);
   await track(p, peer, sessionId, item);
 }
 
@@ -310,7 +369,7 @@ export async function resendAfterSessionSwitch(p: Protocol, peer: string, sessio
   toast(`Your session with ${peer} was replaced. Re-sending ${box.items.length} message(s).`, { icon: "🔁" });
   for (const item of box.items) {
     try {
-      const sid = await transmit(p, peer, item);
+      const { sessionId: sid } = await transmit(p, peer, item);
       await track(p, peer, sid, item);
     } catch (err) {
       reportSendError(err, peer);
@@ -398,6 +457,28 @@ async function processIncoming(raw: unknown) {
   const storedType: ChatContentType =
     result.contentType === "file" && !msg.ctl ? "text" : (result.contentType as ChatContentType);
 
+  const env = frame.envelope as EnvelopeV1;
+  const devMeta: DevMessageMeta = {
+    suite: env.suite === "mlkem1024" ? "ML-KEM-1024 (FIPS 203)" : env.suite,
+    sessionId: env.sessionId,
+    epoch: env.epoch,
+    n: env.n,
+    pn: env.pn,
+    hasKemRatchet: Boolean(env.kem),
+    hasInitHandshake: Boolean(env.init),
+    ciphertextSnippet: env.body ? env.body.slice(0, 48) + "..." : "encrypted",
+    bodyBytes: env.body ? env.body.length : 0,
+    ratchetStep: (env.n % 4) + 1,
+    ratchetThreshold: 4,
+    relayView: {
+      to: p.username,
+      from: peer,
+      type: "krypt.v1",
+      encryptedBytes: env.body ? env.body.length : 0,
+      blindRelayNote: "Blind relay routed by recipient username without decrypting envelope.",
+    },
+  };
+
   await storeMessage(p.keys, {
     from: peer,
     to: p.username,
@@ -405,6 +486,7 @@ async function processIncoming(raw: unknown) {
     type: storedType,
     timestamp: Date.now(),
     msgId: msg.id,
+    devMeta,
   });
   // After storing: a crash in between can at worst show a re-sent copy twice, never lose one.
   await p.messageState.markSeen(peer, msg.id);

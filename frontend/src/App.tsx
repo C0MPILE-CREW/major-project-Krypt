@@ -173,6 +173,7 @@ export default function App() {
           onlineUsers={onlineUsers}
           mailboxEnabled={mailboxEnabled}
           onToggleMailbox={toggleMailbox}
+          protocol={protocol}
         />
       </div>
       {securityFor && protocol && (
