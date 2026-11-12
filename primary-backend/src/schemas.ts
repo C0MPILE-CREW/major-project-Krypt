@@ -127,6 +127,7 @@ export const deleteOneTimePrekeysBody = z.strictObject({
 export const privateMessagePayload = z.looseObject({
   to: usernameSchema,
   type: z.string().max(32).optional(),
+  allowOffline: z.boolean().optional(),
 });
 
 export const socketUsernameArg = usernameSchema;

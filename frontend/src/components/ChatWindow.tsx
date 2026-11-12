@@ -104,7 +104,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [messages]);
 
   const isTargetOnline = activeChat ? onlineUsers.includes(activeChat) : false;
-  const isInputDisabled = isSending;
+  const isOfflineBlocked = !mailboxEnabled && !isTargetOnline;
+  const isInputDisabled = isSending || isOfflineBlocked;
 
   return (
     <div
@@ -300,6 +301,25 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           </div>
 
           <div className="p-4 bg-slate-900 border-t border-slate-800">
+            {isOfflineBlocked && (
+              <div className="max-w-4xl mx-auto mb-3 p-2.5 bg-amber-950/40 border border-amber-800/50 rounded-xl text-xs text-amber-300 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span>⚠️</span>
+                  <span>
+                    <strong>Offline Mailbox Disabled:</strong> {activeChat} is currently offline. Real-time delivery requires {activeChat} to be online.
+                  </span>
+                </div>
+                {onToggleMailbox && (
+                  <button
+                    type="button"
+                    onClick={onToggleMailbox}
+                    className="px-2.5 py-1 bg-amber-800/50 hover:bg-amber-700/60 text-amber-200 border border-amber-600/40 rounded-lg text-xs font-semibold transition"
+                  >
+                    Enable Mailbox
+                  </button>
+                )}
+              </div>
+            )}
             <div className="flex gap-3 items-center max-w-4xl mx-auto">
               {/* Preserved file inputs (with exact IDs for testing and accessibility) */}
               <input
@@ -434,11 +454,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 placeholder={
                   isSending
                     ? "Calculating cryptographic handshake..."
-                    : isTargetOnline
-                      ? `Secure message to ${activeChat}...`
-                      : mailboxEnabled
-                        ? `Secure message to ${activeChat} (queued offline)...`
-                        : `Secure message to ${activeChat} (Real-time only)...`
+                    : isOfflineBlocked
+                      ? `${activeChat} is offline (Real-time only mode: cannot send offline messages)`
+                      : isTargetOnline
+                        ? `Secure message to ${activeChat}...`
+                        : `Secure message to ${activeChat} (queued offline)...`
                 }
                 value={input}
                 onChange={(e) => setInput(e.target.value)}

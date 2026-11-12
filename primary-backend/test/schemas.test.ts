@@ -75,8 +75,9 @@ describe("privateMessagePayload", () => {
       type: "text",
       eph: "x",
       header: { v: 1 },
+      allowOffline: false,
     });
-    expect(parsed).toMatchObject({ to: "bob", ciphertext: "GCM:abc", header: { v: 1 } });
+    expect(parsed).toMatchObject({ to: "bob", ciphertext: "GCM:abc", header: { v: 1 }, allowOffline: false });
   });
   it("rejects a missing or bad recipient", () => {
     expect(privateMessagePayload.safeParse({ ciphertext: "x" }).success).toBe(false);

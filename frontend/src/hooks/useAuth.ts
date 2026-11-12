@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { socket, connectSocket, disconnectSocket } from "../services/socket";
-import { apiPostJson, setUnauthorizedHandler, notifyUnauthorized } from "../services/api";
+import { apiPostJson, setUnauthorizedHandler, notifyUnauthorized, getMailboxSetting } from "../services/api";
 import { getToken, setToken, clearToken } from "../services/authToken";
 import {
   createSessionCache,
@@ -288,6 +288,12 @@ export function useAuth() {
 
       setToken(sessionToken);
       localStorage.setItem("currentUser", username);
+      try {
+        const mb = await getMailboxSetting();
+        localStorage.setItem("krypt_mailbox_enabled", String(mb));
+      } catch {
+        // default remains
+      }
       try {
         // Lets a refresh in this tab resume without the password (see sessionCache.ts).
         await createSessionCache(username, privateKeyBundle);

@@ -31,6 +31,9 @@ const db = vi.hoisted(() => {
         return null;
       }),
     },
+    offlineMessage: {
+      deleteMany: vi.fn(async () => ({ count: 0 })),
+    },
     $transaction: vi.fn(async (arg: unknown) => (typeof arg === "function" ? (arg as any)(db) : arg)),
     _users: users,
   };

@@ -19,14 +19,14 @@ export type RouteStatus = "delivered_online" | "queued_offline" | "mailbox_full"
 /** Deliver a (validated, from-stamped) payload now, or queue it for later. */
 export async function routeMessage(
   sender: Socket,
-  payload: Record<string, unknown> & { to: string; from: string; allowOffline?: boolean },
+  payload: Record<string, unknown> & { to: string; from: string; allowOffline?: boolean | undefined },
 ): Promise<RouteStatus> {
   if (emitToUser(payload.to, "receive_message", payload)) {
     console.log(`[Router] Instant delivery from ${payload.from} to ${payload.to}`);
     return "delivered_online";
   }
 
-  // 1. Sender opted out of offline mailbox
+  // 1. Sender explicitly opted out of offline mailbox
   if (payload.allowOffline === false) {
     sender.emit("message_failed", {
       to: payload.to,
@@ -36,13 +36,31 @@ export async function routeMessage(
     return "mailbox_disabled";
   }
 
-  // 2. Recipient disabled offline mailbox in user settings
+  // 2. Sender disabled offline mailbox in user settings
+  try {
+    const senderUser = await prisma.user.findUnique({
+      where: { username: payload.from },
+      select: { mailboxEnabled: true },
+    });
+    if (senderUser && senderUser.mailboxEnabled === false) {
+      sender.emit("message_failed", {
+        to: payload.to,
+        reason: "mailbox_disabled",
+        error: "Your offline mailbox is disabled. Messages can only be sent to online users.",
+      });
+      return "mailbox_disabled";
+    }
+  } catch (err) {
+    console.warn(`[Router] Could not check sender mailbox setting for ${payload.from}:`, err);
+  }
+
+  // 3. Recipient disabled offline mailbox in user settings (or recipient missing)
   try {
     const recipient = await prisma.user.findUnique({
       where: { username: payload.to },
       select: { mailboxEnabled: true },
     });
-    if (recipient && recipient.mailboxEnabled === false) {
+    if (!recipient || recipient.mailboxEnabled === false) {
       sender.emit("message_failed", {
         to: payload.to,
         reason: "mailbox_disabled",
@@ -52,6 +70,12 @@ export async function routeMessage(
     }
   } catch (err) {
     console.warn(`[Router] Could not check mailbox setting for ${payload.to}:`, err);
+    sender.emit("message_failed", {
+      to: payload.to,
+      reason: "mailbox_disabled",
+      error: "Could not verify recipient mailbox setting.",
+    });
+    return "mailbox_disabled";
   }
 
   try {
@@ -83,28 +107,61 @@ export async function routeMessage(
  * runs is queued (the user is not online yet), so flush once more afterwards.
  */
 async function bringOnline(socket: Socket, username: string) {
-  const deliver = (payload: unknown) => {
-    if (!socket.connected) return false;
-    socket.emit("receive_message", payload);
-    return true;
-  };
-
+  // Check if recipient accepts offline messages
+  let recipientMailboxEnabled = true;
   try {
-    const n = await flush(mailbox, username, deliver);
-    if (n > 0) console.log(`[Mailbox] Delivered ${n} queued message(s) to ${username}`);
+    const user = await prisma.user.findUnique({
+      where: { username },
+      select: { mailboxEnabled: true },
+    });
+    recipientMailboxEnabled = user?.mailboxEnabled ?? true;
   } catch (err) {
-    console.error(`[Mailbox] Error delivering queued messages to ${username}:`, err);
+    console.warn(`[Mailbox] Could not check mailbox setting for ${username}:`, err);
   }
-  if (!socket.connected) return;
+
+  if (!recipientMailboxEnabled) {
+    // User disabled offline mailbox: purge any stored offline messages and do NOT deliver them.
+    try {
+      if (prisma.offlineMessage?.deleteMany) {
+        const { count } = await prisma.offlineMessage.deleteMany({ where: { to: username } });
+        if (count > 0) {
+          console.log(`[Mailbox] Purged ${count} offline message(s) for ${username} because mailbox is disabled.`);
+        }
+      }
+    } catch (err) {
+      console.error(`[Mailbox] Failed to purge disabled mailbox for ${username}:`, err);
+    }
+  } else {
+    const deliver = (payload: unknown) => {
+      if (!socket.connected) return false;
+      socket.emit("receive_message", payload);
+      return true;
+    };
+
+    try {
+      const n = await flush(mailbox, username, deliver);
+      if (n > 0) console.log(`[Mailbox] Delivered ${n} queued message(s) to ${username}`);
+    } catch (err) {
+      console.error(`[Mailbox] Error delivering queued messages to ${username}:`, err);
+    }
+    if (!socket.connected) return;
+  }
 
   onlineUsers.set(username, socket.id);
   socket.emit("online_users", Array.from(onlineUsers.keys()));
   socket.broadcast.emit("user_connected", username);
 
-  try {
-    await flush(mailbox, username, deliver);
-  } catch (err) {
-    console.error(`[Mailbox] Error in post-online flush for ${username}:`, err);
+  if (recipientMailboxEnabled) {
+    const deliver = (payload: unknown) => {
+      if (!socket.connected) return false;
+      socket.emit("receive_message", payload);
+      return true;
+    };
+    try {
+      await flush(mailbox, username, deliver);
+    } catch (err) {
+      console.error(`[Mailbox] Error in post-online flush for ${username}:`, err);
+    }
   }
 
   // Prekey clients that went offline while their pool drained should refill now.

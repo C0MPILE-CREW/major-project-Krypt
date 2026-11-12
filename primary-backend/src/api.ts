@@ -545,11 +545,18 @@ router.get("/settings", async (req, res) => {
 // Update offline mailbox setting
 router.post("/settings/mailbox", async (req, res) => {
   const mailboxEnabled = req.body?.mailboxEnabled !== false;
-  await prisma.user.update({
+  const user = await prisma.user.update({
     where: { id: myId(req) },
     data: { mailboxEnabled },
+    select: { username: true, mailboxEnabled: true },
   });
-  res.status(200).json({ success: true, mailboxEnabled });
+  if (!mailboxEnabled && user && prisma.offlineMessage?.deleteMany) {
+    // When user disables mailbox, purge any waiting offline messages immediately
+    await prisma.offlineMessage.deleteMany({
+      where: { to: user.username },
+    });
+  }
+  res.status(200).json({ success: true, mailboxEnabled: user.mailboxEnabled });
 });
 
 export default router;
