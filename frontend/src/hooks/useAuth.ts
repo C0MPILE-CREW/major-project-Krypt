@@ -277,7 +277,7 @@ export function useAuth() {
               (c: { id?: string; payload?: string }) => c.id && c.payload,
             );
             if (validContacts.length > 0) {
-              await db.contacts.bulkAdd(validContacts);
+              await db.contacts.bulkPut(validContacts);
             }
           }
         }

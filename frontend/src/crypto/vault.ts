@@ -111,7 +111,9 @@ export async function decryptVaultData(
 
 export async function exportChatBackup(password: string): Promise<string> {
   const messages = await db.messages.toArray();
-  const backupData = JSON.stringify({ messages });
+  // Strip local auto-increment `id` so backup contains clean payload entries
+  const exportItems = messages.map(({ payload }) => ({ payload }));
+  const backupData = JSON.stringify({ messages: exportItems });
   return await encryptVaultData(backupData, password);
 }
 
@@ -123,14 +125,24 @@ export async function importChatBackup(
   const data = JSON.parse(decrypted);
   if (data.messages && Array.isArray(data.messages)) {
     // Only encrypted message rows. Ratchet state is never in a backup (spec 7 rule 3).
-    const validMessages = data.messages.filter(
-      (m: unknown): m is { payload: string } =>
+    const validMessages: { payload: string; id?: number }[] = data.messages.filter(
+      (m: unknown): m is { payload: string; id?: number } =>
         !!m && typeof m === "object" && typeof (m as { payload?: unknown }).payload === "string",
     );
-    if (validMessages.length > 0) {
-      await db.messages.bulkAdd(validMessages);
-    } else {
+    if (validMessages.length === 0) {
       throw new Error("No valid messages found in backup.");
+    }
+
+    // Strip any imported `id` so Dexie auto-increments unique primary keys on this device.
+    // Also deduplicate against payloads already stored locally to avoid duplicates.
+    const existing = await db.messages.toArray();
+    const existingPayloads = new Set(existing.map((m) => m.payload));
+    const toInsert = validMessages
+      .filter((m: { payload: string }) => !existingPayloads.has(m.payload))
+      .map(({ payload }: { payload: string }) => ({ payload }));
+
+    if (toInsert.length > 0) {
+      await db.messages.bulkAdd(toInsert);
     }
   } else {
     throw new Error("Invalid backup file: No messages array found.");
