@@ -33,6 +33,8 @@ interface SidebarProps {
   onExportChats: (password: string) => void;
   onImportChats: (file: File, password: string) => void;
   onWipeCache: () => void;
+  mailboxEnabled?: boolean;
+  onToggleMailbox?: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -61,6 +63,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onExportChats,
   onImportChats,
   onWipeCache,
+  mailboxEnabled = true,
+  onToggleMailbox,
 }) => {
   const [activeTab, setActiveTab] = React.useState<"active" | "requests">(
     "active",
@@ -396,6 +400,38 @@ const Sidebar: React.FC<SidebarProps> = ({
             >
               Wipe Local Device Cache
             </button>
+
+            <div className="mt-4 pt-3 border-t border-slate-700/80">
+              <div className="flex items-center justify-between mb-1.5">
+                <div>
+                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
+                    Offline Mailbox
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    {mailboxEnabled ? "Active (Queue when offline)" : "Disabled (Strict Real-Time)"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={onToggleMailbox}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                    mailboxEnabled ? "bg-indigo-600" : "bg-slate-700"
+                  }`}
+                  title={mailboxEnabled ? "Disable offline mailbox" : "Enable offline mailbox"}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      mailboxEnabled ? "translate-x-6" : "translate-x-1"
+                    }`}
+                  />
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                {mailboxEnabled
+                  ? "Encrypted messages wait in server mailbox (up to 7 days) if peer is offline."
+                  : "Strict Real-Time Only: Messages are delivered only when both users are online. Nothing is stored on the server."}
+              </p>
+            </div>
           </div>
         </div>
       )}

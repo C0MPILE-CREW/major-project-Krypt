@@ -533,4 +533,23 @@ router.get("/blocked", async (req, res) => {
   res.status(200).json({ blocked: blocked.map((b) => b.blocked.username) });
 });
 
+// Get user settings (e.g. mailbox preference)
+router.get("/settings", async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: myId(req) },
+    select: { mailboxEnabled: true },
+  });
+  res.status(200).json({ mailboxEnabled: user?.mailboxEnabled ?? true });
+});
+
+// Update offline mailbox setting
+router.post("/settings/mailbox", async (req, res) => {
+  const mailboxEnabled = req.body?.mailboxEnabled !== false;
+  await prisma.user.update({
+    where: { id: myId(req) },
+    data: { mailboxEnabled },
+  });
+  res.status(200).json({ success: true, mailboxEnabled });
+});
+
 export default router;

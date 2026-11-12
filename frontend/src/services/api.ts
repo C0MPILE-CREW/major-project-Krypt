@@ -56,3 +56,25 @@ export function apiPostJson(path: string, body: unknown): Promise<Response> {
     body: JSON.stringify(body),
   });
 }
+
+/** Get the user's offline mailbox preference. */
+export async function getMailboxSetting(): Promise<boolean> {
+  try {
+    const res = await apiFetch("/api/settings");
+    if (!res.ok) return true;
+    const data = await res.json();
+    return data.mailboxEnabled ?? true;
+  } catch {
+    return true;
+  }
+}
+
+/** Update the user's offline mailbox preference. */
+export async function setMailboxSetting(enabled: boolean): Promise<boolean> {
+  try {
+    const res = await apiPostJson("/api/settings/mailbox", { mailboxEnabled: enabled });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

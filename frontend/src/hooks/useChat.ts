@@ -1,7 +1,8 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { db } from "../services/db";
 import { useLiveQuery } from "dexie-react-hooks";
 import toast from "react-hot-toast";
+import { getMailboxSetting, setMailboxSetting } from "../services/api";
 import { decryptLocal } from "../crypto/localStore";
 import type { UserIdentityKeys } from "../crypto/mlkem";
 import { MAX_ATTACHMENT_BYTES, formatBytes } from "../crypto/media";
@@ -47,6 +48,37 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
   const [isSending, setIsSending] = useState(false);
   const rawMessages = useLiveQuery(() => db.messages.toArray());
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
+  const [mailboxEnabled, setMailboxEnabledState] = useState<boolean>(() => {
+    const saved = localStorage.getItem("krypt_mailbox_enabled");
+    return saved !== null ? saved === "true" : true;
+  });
+
+  useEffect(() => {
+    if (user) {
+      getMailboxSetting()
+        .then((enabled) => {
+          setMailboxEnabledState(enabled);
+          localStorage.setItem("krypt_mailbox_enabled", String(enabled));
+        })
+        .catch(() => {});
+    }
+  }, [user]);
+
+  const toggleMailbox = useCallback(async () => {
+    const next = !mailboxEnabled;
+    setMailboxEnabledState(next);
+    localStorage.setItem("krypt_mailbox_enabled", String(next));
+    try {
+      await setMailboxSetting(next);
+      toast.success(
+        next
+          ? "Offline mailbox enabled (messages stored when peer is offline)."
+          : "Offline mailbox disabled (Strict real-time online delivery only).",
+      );
+    } catch {
+      // updated locally
+    }
+  }, [mailboxEnabled]);
 
   React.useEffect(() => {
     let isMounted = true;
@@ -86,14 +118,14 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
     setInput("");
     setIsSending(true);
     try {
-      await sendChatMessage(protocol, targetUser, { type: "text", text });
+      await sendChatMessage(protocol, targetUser, { type: "text", text }, mailboxEnabled);
     } catch (err) {
       setInput((cur) => (cur === "" ? text : cur));
       reportSendError(err, targetUser);
     } finally {
       setIsSending(false);
     }
-  }, [input, activeChat, isSending, protocol]);
+  }, [input, activeChat, isSending, protocol, mailboxEnabled]);
 
   const sendImage = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -112,14 +144,14 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
       setIsSending(true);
       try {
         const jpeg = await prepareImage(file);
-        await sendChatMessage(protocol, targetUser, { type: "image", data: jpeg, mime: "image/jpeg" });
+        await sendChatMessage(protocol, targetUser, { type: "image", data: jpeg, mime: "image/jpeg" }, mailboxEnabled);
       } catch (err) {
         reportSendError(err, targetUser);
       } finally {
         setIsSending(false);
       }
     },
-    [activeChat, isSending, protocol],
+    [activeChat, isSending, protocol, mailboxEnabled],
   );
 
   const sendAudio = useCallback(
@@ -141,14 +173,14 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
       setIsSending(true);
       try {
         const data = new Uint8Array(await file.arrayBuffer());
-        await sendChatMessage(protocol, targetUser, { type: "audio", data, mime });
+        await sendChatMessage(protocol, targetUser, { type: "audio", data, mime }, mailboxEnabled);
       } catch (err) {
         reportSendError(err, targetUser);
       } finally {
         setIsSending(false);
       }
     },
-    [activeChat, isSending, protocol],
+    [activeChat, isSending, protocol, mailboxEnabled],
   );
 
   /** Any file, sent in encrypted chunks after the peer accepts (spec 14). Images and audio keep their own buttons. */
@@ -187,5 +219,7 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
     sendAudio,
     sendFile,
     isSending,
+    mailboxEnabled,
+    toggleMailbox,
   };
 }

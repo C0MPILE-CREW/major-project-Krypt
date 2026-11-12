@@ -114,6 +114,7 @@ const FAILURE_TEXT: Record<string, (to: string) => string> = {
   blocked: (to) => `You cannot message ${to}.`,
   not_friends: (to) => `You can only message friends; ${to} is not one.`,
   mailbox_full: (to) => `${to}'s offline mailbox is full. Try again later.`,
+  mailbox_disabled: (to) => `Offline mailbox is disabled. ${to} must be online to receive messages.`,
   server_error: (to) => `The server could not deliver your message to ${to}.`,
 };
 
@@ -166,13 +167,16 @@ function emitPrivateMessage(payload: unknown, timeoutMs: number): Promise<{ succ
   });
 }
 
-async function transmit(p: Protocol, peer: string, item: Outgoing): Promise<string> {
+async function transmit(p: Protocol, peer: string, item: Outgoing, allowOffline?: boolean): Promise<string> {
   const msg: AppMessage = { ...item.msg };
   const gossip = p.kt.gossip();
   if (gossip) msg.kt = gossip;
   else delete msg.kt;
   const env = await p.session.encrypt(peer, encodeAppMessage(msg), item.contentType);
   const payload = buildWirePayload(env, item.attachment ? toBase64url(item.attachment) : undefined);
+  if (allowOffline !== undefined) {
+    payload.allowOffline = allowOffline;
+  }
   assertFrameFits(payload);
   const timeout = 20_000 + Math.ceil((item.attachment?.length ?? 0) / 50_000) * 1000;
   const ack = await emitPrivateMessage(payload, timeout);
@@ -203,7 +207,12 @@ export function toDataUrl(data: Uint8Array, mime: string): string {
 }
 
 /** Encrypts, relays and (after the relay accepted it) stores one message. */
-export async function sendChatMessage(p: Protocol, peer: string, content: OutgoingContent): Promise<void> {
+export async function sendChatMessage(
+  p: Protocol,
+  peer: string,
+  content: OutgoingContent,
+  allowOffline?: boolean,
+): Promise<void> {
   const msg: AppMessage = { v: 1, id: newId(), sentAt: Date.now() };
   const item: Outgoing = { contentType: content.type, msg };
   let display: string;
@@ -217,7 +226,7 @@ export async function sendChatMessage(p: Protocol, peer: string, content: Outgoi
     item.attachment = ciphertext;
     display = toDataUrl(content.data, content.mime);
   }
-  const sessionId = await transmit(p, peer, item);
+  const sessionId = await transmit(p, peer, item, allowOffline);
   await track(p, peer, sessionId, item);
   await storeMessage(p.keys, { from: p.username, to: peer, decryptedText: display, type: content.type, timestamp: msg.sentAt, msgId: msg.id });
 }

@@ -16,7 +16,7 @@ const db = vi.hoisted(() => {
         return null;
       }),
       create: vi.fn(async ({ data }: { data: any }) => {
-        const record = { id: `u-${data.username}`, tokenVersion: 1, ...data };
+        const record = { id: `u-${data.username}`, tokenVersion: 1, mailboxEnabled: true, ...data };
         users.set(data.username, record);
         return record;
       }),
@@ -24,6 +24,7 @@ const db = vi.hoisted(() => {
         for (const u of users.values()) {
           if (u.id === where.id) {
             if (data.tokenVersion?.increment) u.tokenVersion += data.tokenVersion.increment;
+            if (data.mailboxEnabled !== undefined) u.mailboxEnabled = data.mailboxEnabled;
             return u;
           }
         }
@@ -141,6 +142,35 @@ describe("Auth Hardening & Anti-Enumeration", () => {
 
     const updatedUser = await db.user.findUnique({ where: { id: user.id } });
     expect(updatedUser.tokenVersion).toBe(2);
+  });
+
+  it("allows querying and toggling offline mailbox setting", async () => {
+    const user = await db.user.create({
+      data: {
+        username: "mailbox_user",
+        publicKey: "pk2",
+        srpSalt: "salt2",
+        srpVerifier: "ver2",
+      },
+    });
+
+    const token = issueToken({ userId: user.id, username: user.username, tokenVersion: user.tokenVersion });
+
+    // Initial setting is true
+    const getRes = await fetch(`${base}/settings`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(getRes.status).toBe(200);
+    expect(await getRes.json()).toEqual({ mailboxEnabled: true });
+
+    // Toggle to false
+    const postRes = await post("/settings/mailbox", { mailboxEnabled: false }, token);
+    expect(postRes.status).toBe(200);
+    expect(await postRes.json()).toEqual({ success: true, mailboxEnabled: false });
+
+    // Verify it updated
+    const updatedUser = await db.user.findUnique({ where: { id: user.id } });
+    expect(updatedUser.mailboxEnabled).toBe(false);
   });
 });
 

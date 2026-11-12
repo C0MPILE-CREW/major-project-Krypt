@@ -58,6 +58,8 @@ export default function App() {
     sendAudio,
     sendFile,
     isSending,
+    mailboxEnabled,
+    toggleMailbox,
   } = useChat(user, myPrivateKey, protocol);
 
   const {
@@ -152,6 +154,8 @@ export default function App() {
           onExportChats={handleExportChats}
           onImportChats={handleImportChats}
           onWipeCache={handleWipeCache}
+          mailboxEnabled={mailboxEnabled}
+          onToggleMailbox={toggleMailbox}
         />
         <ChatWindow
           user={user}
@@ -167,6 +171,8 @@ export default function App() {
           setPreviewImage={setPreviewImage}
           isSending={isSending}
           onlineUsers={onlineUsers}
+          mailboxEnabled={mailboxEnabled}
+          onToggleMailbox={toggleMailbox}
         />
       </div>
       {securityFor && protocol && (

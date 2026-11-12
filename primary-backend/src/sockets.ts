@@ -14,16 +14,44 @@ const mailbox = prismaMailboxStore(prisma);
 type Ack = (response: unknown) => void;
 const asAck = (cb: unknown): Ack => (typeof cb === "function" ? (cb as Ack) : () => {});
 
-export type RouteStatus = "delivered_online" | "queued_offline" | "mailbox_full" | "error";
+export type RouteStatus = "delivered_online" | "queued_offline" | "mailbox_full" | "mailbox_disabled" | "error";
 
 /** Deliver a (validated, from-stamped) payload now, or queue it for later. */
 export async function routeMessage(
   sender: Socket,
-  payload: Record<string, unknown> & { to: string; from: string },
+  payload: Record<string, unknown> & { to: string; from: string; allowOffline?: boolean },
 ): Promise<RouteStatus> {
   if (emitToUser(payload.to, "receive_message", payload)) {
     console.log(`[Router] Instant delivery from ${payload.from} to ${payload.to}`);
     return "delivered_online";
+  }
+
+  // 1. Sender opted out of offline mailbox
+  if (payload.allowOffline === false) {
+    sender.emit("message_failed", {
+      to: payload.to,
+      reason: "mailbox_disabled",
+      error: "Recipient is offline and offline mailbox delivery is disabled.",
+    });
+    return "mailbox_disabled";
+  }
+
+  // 2. Recipient disabled offline mailbox in user settings
+  try {
+    const recipient = await prisma.user.findUnique({
+      where: { username: payload.to },
+      select: { mailboxEnabled: true },
+    });
+    if (recipient && recipient.mailboxEnabled === false) {
+      sender.emit("message_failed", {
+        to: payload.to,
+        reason: "mailbox_disabled",
+        error: "Recipient does not accept offline messages.",
+      });
+      return "mailbox_disabled";
+    }
+  } catch (err) {
+    console.warn(`[Router] Could not check mailbox setting for ${payload.to}:`, err);
   }
 
   try {

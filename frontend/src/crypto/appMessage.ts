@@ -56,6 +56,7 @@ export interface WirePayload {
   type: typeof WIRE_TYPE;
   envelope: EnvelopeV1;
   attachment?: string;
+  allowOffline?: boolean;
 }
 
 export function isChatContentType(x: string): x is ChatContentType {

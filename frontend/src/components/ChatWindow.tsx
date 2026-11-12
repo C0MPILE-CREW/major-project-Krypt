@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import type { FileCardInfo, StoredMessage } from "../services/messaging";
 import FileTransferCard from "./FileTransferCard";
 
@@ -34,6 +34,8 @@ interface ChatWindowProps {
   setPreviewImage: (url: string | null) => void;
   isSending: boolean;
   onlineUsers: string[];
+  mailboxEnabled?: boolean;
+  onToggleMailbox?: () => void;
 }
 
 const ChatWindow: React.FC<ChatWindowProps> = ({
@@ -50,8 +52,27 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   setPreviewImage,
   isSending,
   onlineUsers,
+  mailboxEnabled = true,
+  onToggleMailbox,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(event.target as Node)) {
+        setShowAttachMenu(false);
+      }
+    }
+    if (showAttachMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [showAttachMenu]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -82,19 +103,40 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                     }`}
                   />
                   <p className="text-xs text-slate-400 font-medium">
-                    {isTargetOnline ? "Online" : "Offline"} • Krypt v1 PQ ratchet {isTargetOnline ? "" : "(Mailbox Active)"}
+                    {isTargetOnline ? "Online" : "Offline"} • Krypt v1 PQ ratchet {isTargetOnline ? "" : (mailboxEnabled ? "(Mailbox Active)" : "(Real-Time Only)")}
                   </p>
                 </div>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={onOpenSecurity}
-              className="px-3 py-2 text-xs font-semibold rounded-lg bg-slate-800 border border-slate-700 text-indigo-300 hover:bg-slate-700 transition"
-              title="Safety number, key transparency and session status"
-            >
-              Security
-            </button>
+            <div className="flex items-center gap-2">
+              {onToggleMailbox && (
+                <button
+                  type="button"
+                  onClick={onToggleMailbox}
+                  className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition flex items-center gap-1.5 ${
+                    mailboxEnabled
+                      ? "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
+                      : "bg-amber-950/40 border-amber-800/60 text-amber-300 hover:bg-amber-900/50"
+                  }`}
+                  title={
+                    mailboxEnabled
+                      ? "Offline mailbox is ON: messages queued if peer is offline. Click to switch to Real-Time Only."
+                      : "Offline mailbox is OFF: strict real-time delivery only. Click to enable mailbox queueing."
+                  }
+                >
+                  <span className={`w-2 h-2 rounded-full ${mailboxEnabled ? "bg-indigo-400" : "bg-amber-400"}`} />
+                  {mailboxEnabled ? "Mailbox On" : "Real-Time Only"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onOpenSecurity}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 border border-slate-700 text-indigo-300 hover:bg-slate-700 transition"
+                title="Safety number, key transparency and session status"
+              >
+                Security
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 p-6 overflow-y-auto">
@@ -189,91 +231,134 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
           <div className="p-4 bg-slate-900 border-t border-slate-800">
             <div className="flex gap-3 items-center max-w-4xl mx-auto">
+              {/* Preserved file inputs (with exact IDs for testing and accessibility) */}
               <input
+                ref={imageInputRef}
                 type="file"
                 accept="image/*"
                 id="image-upload"
                 className="hidden"
-                onChange={onSendImage}
+                onChange={(e) => {
+                  setShowAttachMenu(false);
+                  onSendImage(e);
+                }}
                 disabled={isInputDisabled}
               />
-              <label
-                htmlFor={isInputDisabled ? undefined : "image-upload"}
-                className={`p-3 bg-slate-800 text-slate-400 rounded-xl transition-colors border border-slate-700 shadow-sm ${isInputDisabled ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-700 cursor-pointer"}`}
-                title={
-                  isInputDisabled
-                    ? "Target offline or calculating handshake"
-                    : "Send Encrypted Image"
-                }
-              >
-                <svg
-                  className="w-6 h-6"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-                  ></path>
-                </svg>
-              </label>
-
               <input
+                ref={audioInputRef}
                 type="file"
                 accept="audio/*"
                 id="audio-upload"
                 className="hidden"
-                onChange={onSendAudio}
+                onChange={(e) => {
+                  setShowAttachMenu(false);
+                  onSendAudio(e);
+                }}
                 disabled={isInputDisabled}
               />
-              <label
-                htmlFor={isInputDisabled ? undefined : "audio-upload"}
-                className={`p-3 bg-slate-800 text-slate-400 rounded-xl transition-colors border border-slate-700 shadow-sm ${isInputDisabled ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-700 cursor-pointer"}`}
-                title={
-                  isInputDisabled
-                    ? "Target offline or calculating handshake"
-                    : "Send Encrypted Audio"
-                }
-              >
-                <svg
-                  className="w-6 h-6"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                  ></path>
-                </svg>
-              </label>
-
               <input
+                ref={fileInputRef}
                 type="file"
                 id="file-upload"
                 className="hidden"
-                onChange={onSendFile}
+                onChange={(e) => {
+                  setShowAttachMenu(false);
+                  onSendFile(e);
+                }}
                 disabled={isInputDisabled}
               />
-              <label
-                htmlFor={isInputDisabled ? undefined : "file-upload"}
-                className={`p-3 bg-slate-800 text-slate-400 rounded-xl transition-colors border border-slate-700 shadow-sm ${isInputDisabled ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-700 cursor-pointer"}`}
-                title="Send Encrypted File"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                  ></path>
-                </svg>
-              </label>
+
+              {/* Merged Attachment Button & Dropdown Menu */}
+              <div className="relative" ref={attachMenuRef}>
+                <button
+                  type="button"
+                  id="attachment-menu-button"
+                  onClick={() => setShowAttachMenu((v: boolean) => !v)}
+                  disabled={isInputDisabled}
+                  className={`p-3 bg-slate-800 text-slate-300 rounded-xl transition-all border border-slate-700 shadow-sm flex items-center justify-center ${
+                    isInputDisabled
+                      ? "opacity-50 cursor-not-allowed"
+                      : "hover:bg-slate-700 hover:text-white cursor-pointer"
+                  } ${showAttachMenu ? "bg-slate-700 text-indigo-400 border-indigo-500/60 ring-2 ring-indigo-500/20" : ""}`}
+                  title={isInputDisabled ? "Target offline or calculating handshake" : "Attach Photo, Audio, or File"}
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                    />
+                  </svg>
+                </button>
+
+                {showAttachMenu && (
+                  <div className="absolute bottom-16 left-0 bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-2xl shadow-2xl p-2 flex flex-col gap-1 min-w-[210px] z-50 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                    <button
+                      type="button"
+                      onClick={() => imageInputRef.current?.click()}
+                      className="flex items-center gap-3 px-3 py-2.5 text-sm text-slate-200 hover:bg-slate-800 rounded-xl transition-colors text-left group"
+                    >
+                      <span className="p-2 bg-indigo-500/20 text-indigo-400 rounded-lg group-hover:bg-indigo-500/30 transition-colors">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                          />
+                        </svg>
+                      </span>
+                      <div>
+                        <div className="font-semibold text-slate-100">Send Image</div>
+                        <div className="text-[11px] text-slate-400">Encrypted inline photo</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => audioInputRef.current?.click()}
+                      className="flex items-center gap-3 px-3 py-2.5 text-sm text-slate-200 hover:bg-slate-800 rounded-xl transition-colors text-left group"
+                    >
+                      <span className="p-2 bg-emerald-500/20 text-emerald-400 rounded-lg group-hover:bg-emerald-500/30 transition-colors">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                          />
+                        </svg>
+                      </span>
+                      <div>
+                        <div className="font-semibold text-slate-100">Send Audio</div>
+                        <div className="text-[11px] text-slate-400">Encrypted audio clip</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="flex items-center gap-3 px-3 py-2.5 text-sm text-slate-200 hover:bg-slate-800 rounded-xl transition-colors text-left group"
+                    >
+                      <span className="p-2 bg-cyan-500/20 text-cyan-400 rounded-lg group-hover:bg-cyan-500/30 transition-colors">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                          />
+                        </svg>
+                      </span>
+                      <div>
+                        <div className="font-semibold text-slate-100">Send Document</div>
+                        <div className="text-[11px] text-slate-400">Encrypted file transfer</div>
+                      </div>
+                    </button>
+                  </div>
+                )}
+              </div>
 
               <input
                 placeholder={
@@ -281,7 +366,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                     ? "Calculating cryptographic handshake..."
                     : isTargetOnline
                       ? `Secure message to ${activeChat}...`
-                      : `Secure message to ${activeChat} (queued offline)...`
+                      : mailboxEnabled
+                        ? `Secure message to ${activeChat} (queued offline)...`
+                        : `Secure message to ${activeChat} (Real-time only)...`
                 }
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
