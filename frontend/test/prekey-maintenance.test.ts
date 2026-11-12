@@ -165,6 +165,22 @@ describe("prekey maintenance: one-time prekey hygiene", () => {
     expect(await recv(alice, env)).toBe("hi alice");
   });
 
+  it("a fresh device with 0 local OPKs resets immediately even if a reset happened recently (< 1 hour)", async () => {
+    // Device 1 runs at T0
+    await maintainPrekeys(device(), T0);
+
+    // Simulated new device login just 10 seconds later (well within 1-hour OPK_RESET_MIN_INTERVAL_MS)
+    const freshNewDevice = device();
+    expect(await freshNewDevice.prekeys.countOneTimePrekeys()).toBe(0);
+    expect(server.opks.length).toBe(OPK_TARGET);
+
+    const r = await maintainPrekeys(freshNewDevice, T0 + 10_000);
+    expect(r.resetOneTime).toBe(true);
+    expect(r.uploadedOneTime).toBe(OPK_TARGET);
+    expect(server.deletes).toBe(1);
+    expect(await freshNewDevice.prekeys.countOneTimePrekeys()).toBe(OPK_TARGET);
+  });
+
   it("UNKNOWN_PREKEY from a peer's init triggers the reset, at most once per interval", async () => {
     const p = device();
     await maintainPrekeys(p, T0);

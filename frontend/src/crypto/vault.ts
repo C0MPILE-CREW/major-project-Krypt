@@ -21,6 +21,27 @@ import { open, seal } from "./session-store";
 const PBKDF2_ITERATIONS = 600000;
 const VAULT_HEADER = "ENC:v2:";
 
+export interface VaultPrekeyRecordWire {
+  keyId: number;
+  publicKey: string; // base64url
+  secretKey: string; // base64url
+  createdAt: number;
+}
+
+export interface VaultPrekeysWire {
+  signedPrekeys: VaultPrekeyRecordWire[];
+  oneTimePrekeys: VaultPrekeyRecordWire[];
+  acceptedSessions: { spkId: number; sessionId: string }[];
+  spkMeta?: { current: number | null; retired: { id: number; retiredAt: number }[] };
+}
+
+export interface VaultData {
+  version?: number;
+  privateKey: string;
+  contacts?: Array<{ id?: string; payload?: string }>;
+  prekeys?: VaultPrekeysWire;
+}
+
 /** Minimum length for a vault (.vault export) password. */
 export const MIN_VAULT_PASSWORD_LENGTH = 8;
 

@@ -10,6 +10,10 @@ import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
 import { toBase64 } from "@krypt/shared";
 import type { UserIdentityKeys } from "../src/crypto/mlkem";
+import { fromBase64url, toBase64url } from "../src/crypto/encoding";
+import { IndexedDbPrekeyStore } from "../src/crypto/session-store";
+import { mlkem1024 } from "../src/crypto/pq";
+import type { VaultData } from "../src/crypto/vault";
 
 vi.stubGlobal("window", globalThis);
 const { decryptVaultData, encryptVaultData, exportChatBackup, importChatBackup } = await import("../src/crypto/vault");
@@ -109,5 +113,130 @@ describe("chat backups", () => {
       "msg_already_here",
       "msg_new_from_backup",
     ]);
+  });
+});
+
+describe("vault prekey export & multi-device login", () => {
+  const newKey = () => crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  let dbIdx = 0;
+  const nextDb = () => `prekey-test-db-${++dbIdx}`;
+
+  it("exports prekeys from Device 1 and restores them seamlessly into Device 2", async () => {
+    const key1 = await newKey();
+    const db1Name = nextDb();
+    const store1 = new IndexedDbPrekeyStore({ key: key1, dbName: db1Name });
+
+    const spkPair = mlkem1024.keygen();
+    const opkPair1 = mlkem1024.keygen();
+    const opkPair2 = mlkem1024.keygen();
+
+    await store1.putSignedPrekey({ keyId: 7, ...spkPair, createdAt: 1000 });
+    await store1.putOneTimePrekeys([
+      { keyId: 101, ...opkPair1, createdAt: 1001 },
+      { keyId: 102, ...opkPair2, createdAt: 1002 },
+    ]);
+    await store1.recordAcceptedSession(7, "sid-test-session-1");
+
+    // Device 1 exports all prekeys
+    const exported = await store1.exportAll();
+    await store1.close();
+
+    expect(exported.signedPrekeys).toHaveLength(1);
+    expect(exported.oneTimePrekeys).toHaveLength(2);
+    expect(exported.acceptedSessions).toEqual([{ spkId: 7, sessionId: "sid-test-session-1" }]);
+
+    // Pack into VaultData
+    const vault: VaultData = {
+      version: 2,
+      privateKey: "mock-identity-key-bundle",
+      contacts: [{ id: "alice", payload: "contact-alice" }],
+      prekeys: {
+        signedPrekeys: exported.signedPrekeys.map((r) => ({
+          keyId: r.keyId,
+          publicKey: toBase64url(r.publicKey),
+          secretKey: toBase64url(r.secretKey),
+          createdAt: r.createdAt,
+        })),
+        oneTimePrekeys: exported.oneTimePrekeys.map((r) => ({
+          keyId: r.keyId,
+          publicKey: toBase64url(r.publicKey),
+          secretKey: toBase64url(r.secretKey),
+          createdAt: r.createdAt,
+        })),
+        acceptedSessions: exported.acceptedSessions,
+        spkMeta: { current: 7, retired: [] },
+      },
+    };
+
+    // Encrypt vault file
+    const vaultCiphertext = await encryptVaultData(JSON.stringify(vault), "vault-password-456");
+
+    // Device 2 decrypts vault
+    const decryptedJson = await decryptVaultData(vaultCiphertext, "vault-password-456");
+    const restoredVault: VaultData = JSON.parse(decryptedJson);
+
+    expect(restoredVault.privateKey).toBe("mock-identity-key-bundle");
+    expect(restoredVault.contacts).toHaveLength(1);
+    expect(restoredVault.prekeys).toBeDefined();
+
+    // Device 2 restores prekeys into its own store
+    const key2 = await newKey();
+    const db2Name = nextDb();
+    const store2 = new IndexedDbPrekeyStore({ key: key2, dbName: db2Name });
+
+    const signedPrekeys = (restoredVault.prekeys!.signedPrekeys || []).map((r) => ({
+      keyId: r.keyId,
+      publicKey: fromBase64url(r.publicKey),
+      secretKey: fromBase64url(r.secretKey),
+      createdAt: r.createdAt,
+    }));
+    const oneTimePrekeys = (restoredVault.prekeys!.oneTimePrekeys || []).map((r) => ({
+      keyId: r.keyId,
+      publicKey: fromBase64url(r.publicKey),
+      secretKey: fromBase64url(r.secretKey),
+      createdAt: r.createdAt,
+    }));
+
+    await store2.importAll({
+      signedPrekeys,
+      oneTimePrekeys,
+      acceptedSessions: restoredVault.prekeys!.acceptedSessions,
+    });
+
+    // Verify Device 2 holds the exact private keys and can answer handshakes
+    const restoredSpk = await store2.getSignedPrekey(7);
+    expect(restoredSpk).toBeDefined();
+    expect(restoredSpk!.publicKey).toEqual(spkPair.publicKey);
+    expect(restoredSpk!.secretKey).toEqual(spkPair.secretKey);
+
+    const restoredOpk1 = await store2.getOneTimePrekey(101);
+    expect(restoredOpk1).toBeDefined();
+    expect(restoredOpk1!.publicKey).toEqual(opkPair1.publicKey);
+    expect(restoredOpk1!.secretKey).toEqual(opkPair1.secretKey);
+
+    const restoredOpk2 = await store2.getOneTimePrekey(102);
+    expect(restoredOpk2).toBeDefined();
+    expect(restoredOpk2!.publicKey).toEqual(opkPair2.publicKey);
+    expect(restoredOpk2!.secretKey).toEqual(opkPair2.secretKey);
+
+    expect(await store2.hasAcceptedSession(7, "sid-test-session-1")).toBe(true);
+    expect(await store2.hasAcceptedSession(7, "non-existent-sid")).toBe(false);
+
+    await store2.close();
+  });
+
+  it("handles legacy vaults without prekeys smoothly without throwing", async () => {
+    const legacyVault: VaultData = {
+      privateKey: "legacy-identity-bundle",
+      contacts: [{ id: "bob", payload: "contact-bob" }],
+    };
+
+    const enc = await encryptVaultData(JSON.stringify(legacyVault), "pw-legacy");
+    const dec = await decryptVaultData(enc, "pw-legacy");
+    const parsed: VaultData = JSON.parse(dec);
+
+    expect(parsed.privateKey).toBe("legacy-identity-bundle");
+    expect(parsed.contacts).toHaveLength(1);
+    expect(parsed.prekeys).toBeUndefined();
   });
 });

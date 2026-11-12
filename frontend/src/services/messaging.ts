@@ -401,6 +401,17 @@ async function processIncoming(raw: unknown) {
   } catch (err) {
     reportDecryptError(err, frame.from);
     if (err instanceof DecryptError && err.code === "UNKNOWN_PREKEY") {
+      try {
+        await storeMessage(p.keys, {
+          from: frame.from,
+          to: p.username,
+          decryptedText: `[Session Notice: A handshake from ${frame.from} could not be decrypted because it used a prekey not found on this device. Send them a message to start a fresh post-quantum session.]`,
+          type: "text",
+          timestamp: Date.now(),
+        });
+      } catch (storeErr) {
+        console.warn("[Krypt] Failed to record UNKNOWN_PREKEY notice:", storeErr);
+      }
       // The server handed out a prekey this device cannot answer (lost
       // prekey store): replace our one-time prekeys. Rate-limited inside.
       void resetOneTimePrekeysAfterUnknown(p).catch((e) => console.warn("[Krypt] one-time prekey reset failed:", e));

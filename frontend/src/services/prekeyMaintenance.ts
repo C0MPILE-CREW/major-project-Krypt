@@ -68,14 +68,14 @@ function noteReset(user: string, now: number) {
   }
 }
 
-interface SpkMeta {
+export interface SpkMeta {
   current: number | null;
   retired: { id: number; retiredAt: number }[];
 }
 
-const metaKey = (user: string) => `krypt_spk_meta_${user}`;
+export const metaKey = (user: string) => `krypt_spk_meta_${user}`;
 
-function loadMeta(user: string): SpkMeta {
+export function loadMeta(user: string): SpkMeta {
   try {
     const raw = JSON.parse(localStorage.getItem(metaKey(user)) ?? "null");
     if (raw && typeof raw === "object" && Array.isArray(raw.retired)) {
@@ -93,7 +93,7 @@ function loadMeta(user: string): SpkMeta {
   return { current: null, retired: [] };
 }
 
-function saveMeta(user: string, meta: SpkMeta) {
+export function saveMeta(user: string, meta: SpkMeta) {
   localStorage.setItem(metaKey(user), JSON.stringify(meta));
 }
 
@@ -151,8 +151,14 @@ export function maintainPrekeys(p: Protocol, now = Date.now(), opts: Maintenance
 
     // Stale OPKs: the server lists more than this device can answer for, or a
     // peer's init named one we do not hold. Withdraw them all, then refill.
-    const lostHalves = status.oneTimeRemaining > (await p.prekeys.countOneTimePrekeys());
-    if ((lostHalves || opts.resetOneTime) && now - lastReset(p.username) >= OPK_RESET_MIN_INTERVAL_MS) {
+    // If localOpkCount is 0 while server has prekeys, this device has zero private halves
+    // (new device login without prekeys or cleared store); bypass the rate limit so
+    // peers are not given orphaned OPKs that this device can never decrypt.
+    const localOpkCount = await p.prekeys.countOneTimePrekeys();
+    const lostHalves = status.oneTimeRemaining > localOpkCount;
+    const mustResetZeroLocal = localOpkCount === 0 && status.oneTimeRemaining > 0;
+    const allowReset = mustResetZeroLocal || (now - lastReset(p.username) >= OPK_RESET_MIN_INTERVAL_MS);
+    if ((lostHalves || opts.resetOneTime) && allowReset) {
       status.oneTimeRemaining = await withdrawAllOneTimePrekeys();
       noteReset(p.username, now);
       result.resetOneTime = true;
@@ -228,6 +234,7 @@ export function maintainPrekeys(p: Protocol, now = Date.now(), opts: Maintenance
  * withdraw them all and upload fresh ones. Returns null when rate-limited.
  */
 export async function resetOneTimePrekeysAfterUnknown(p: Protocol, now = Date.now()): Promise<MaintenanceResult | null> {
-  if (now - lastReset(p.username) < OPK_RESET_MIN_INTERVAL_MS) return null;
+  const localCount = await p.prekeys.countOneTimePrekeys();
+  if (localCount > 0 && now - lastReset(p.username) < OPK_RESET_MIN_INTERVAL_MS) return null;
   return maintainPrekeys(p, now, { resetOneTime: true });
 }

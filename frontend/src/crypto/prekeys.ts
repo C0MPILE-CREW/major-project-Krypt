@@ -73,6 +73,17 @@ export interface PrekeyStore {
 
   hasAcceptedSession(spkId: number, sessionId: string): Promise<boolean>;
   recordAcceptedSession(spkId: number, sessionId: string): Promise<void>;
+
+  exportAll?(): Promise<{
+    signedPrekeys: PrekeyRecord[];
+    oneTimePrekeys: PrekeyRecord[];
+    acceptedSessions: { spkId: number; sessionId: string }[];
+  }>;
+  importAll?(data: {
+    signedPrekeys?: PrekeyRecord[];
+    oneTimePrekeys?: PrekeyRecord[];
+    acceptedSessions?: { spkId: number; sessionId: string }[];
+  }): Promise<void>;
 }
 
 /** In-memory PrekeyStore (tests, and a template for persistent stores). */
@@ -115,6 +126,34 @@ export class MemoryPrekeyStore implements PrekeyStore {
     let set = this.accepted.get(spkId);
     if (!set) this.accepted.set(spkId, (set = new Set()));
     set.add(sessionId);
+  }
+
+  async exportAll() {
+    const acceptedSessions: { spkId: number; sessionId: string }[] = [];
+    for (const [spkId, set] of this.accepted) {
+      for (const sessionId of set) {
+        acceptedSessions.push({ spkId, sessionId });
+      }
+    }
+    return {
+      signedPrekeys: [...this.spks.values()].map(copyRecord),
+      oneTimePrekeys: [...this.opks.values()].map(copyRecord),
+      acceptedSessions,
+    };
+  }
+
+  async importAll(data: {
+    signedPrekeys?: PrekeyRecord[];
+    oneTimePrekeys?: PrekeyRecord[];
+    acceptedSessions?: { spkId: number; sessionId: string }[];
+  }) {
+    for (const r of data.signedPrekeys ?? []) this.spks.set(r.keyId, copyRecord(r));
+    for (const r of data.oneTimePrekeys ?? []) this.opks.set(r.keyId, copyRecord(r));
+    for (const a of data.acceptedSessions ?? []) {
+      let set = this.accepted.get(a.spkId);
+      if (!set) this.accepted.set(a.spkId, (set = new Set()));
+      set.add(a.sessionId);
+    }
   }
 
   /** Deep copy, used by tests to snapshot and compare state. */

@@ -17,14 +17,19 @@ import {
 import srp from "secure-remote-password/client";
 import toast from "react-hot-toast";
 import { db } from "../services/db";
-import { deleteSessionDatabase, stopProtocol } from "../services/protocol";
+import { deleteSessionDatabase, deriveStoreKey, prekeyDbName, startProtocol, stopProtocol } from "../services/protocol";
 import {
   encryptVaultData,
   decryptVaultData,
   exportChatBackup,
   importChatBackup,
   MIN_VAULT_PASSWORD_LENGTH,
+  type VaultData,
+  type VaultPrekeysWire,
 } from "../crypto/vault";
+import { loadMeta, saveMeta, maintainPrekeys } from "../services/prekeyMaintenance";
+import { IndexedDbPrekeyStore } from "../crypto/session-store";
+import { fromBase64url, toBase64url } from "../crypto/encoding";
 
 // sessionStorage key for a one-shot message shown after a forced reload
 const FLASH_KEY = "krypt_flash";
@@ -94,7 +99,14 @@ export function useAuth() {
       try {
         const bundle = await restoreSessionCache(user);
         if (!bundle || cancelled) return;
-        setMyPrivateKey(importPrivateIdentity(bundle));
+        const keys = importPrivateIdentity(bundle);
+        try {
+          const p = await startProtocol(user, keys);
+          maintainPrekeys(p).catch((err) => console.warn("[Krypt] background prekey refresh:", err));
+        } catch (pErr) {
+          console.warn("[Krypt] Protocol restore failed on refresh:", pErr);
+        }
+        setMyPrivateKey(keys);
       } catch {
         await clearSessionCache(user).catch(() => {});
         // No toast here to avoid annoying the user on every fresh load if they aren't logged in
@@ -117,8 +129,8 @@ export function useAuth() {
     // Any previous session token is discarded; login/registration run unauthenticated.
     clearToken();
     let sessionToken = "";
-    let loadedKeys: UserIdentityKeys;
-    let privateKeyBundle: string;
+    let loadedKeys: UserIdentityKeys | null = null;
+    let privateKeyBundle = "";
     try {
       if (isRegistering) {
         const salt = srp.generateSalt();
@@ -229,6 +241,8 @@ export function useAuth() {
               cachedKey,
               password,
             );
+            loadedKeys = importPrivateIdentity(privateKeyStrToImport);
+            privateKeyBundle = privateKeyStrToImport;
           } catch {
             throw new Error(
               "Wrong password! Could not decrypt your local security cache.",
@@ -249,7 +263,7 @@ export function useAuth() {
             );
           }
 
-          let vault;
+          let vault: VaultData;
           try {
             vault = JSON.parse(decryptedContent);
           } catch {
@@ -260,6 +274,45 @@ export function useAuth() {
             throw new Error("Invalid vault file: Missing identity key.");
           }
           privateKeyStrToImport = vault.privateKey;
+          loadedKeys = importPrivateIdentity(privateKeyStrToImport);
+          privateKeyBundle = privateKeyStrToImport;
+
+          // If vault contains prekeys, restore them into IndexedDB and localStorage
+          if (vault.prekeys) {
+            try {
+              const storeKey = await deriveStoreKey(loadedKeys, username);
+              const prekeyStore = new IndexedDbPrekeyStore({
+                key: storeKey,
+                dbName: prekeyDbName(username),
+              });
+              if (prekeyStore.importAll) {
+                const signedPrekeys = (vault.prekeys.signedPrekeys || []).map((r) => ({
+                  keyId: r.keyId,
+                  publicKey: fromBase64url(r.publicKey),
+                  secretKey: fromBase64url(r.secretKey),
+                  createdAt: r.createdAt,
+                }));
+                const oneTimePrekeys = (vault.prekeys.oneTimePrekeys || []).map((r) => ({
+                  keyId: r.keyId,
+                  publicKey: fromBase64url(r.publicKey),
+                  secretKey: fromBase64url(r.secretKey),
+                  createdAt: r.createdAt,
+                }));
+                await prekeyStore.importAll({
+                  signedPrekeys,
+                  oneTimePrekeys,
+                  acceptedSessions: vault.prekeys.acceptedSessions || [],
+                });
+              }
+              await prekeyStore.close();
+
+              if (vault.prekeys.spkMeta) {
+                saveMeta(username, vault.prekeys.spkMeta);
+              }
+            } catch (err) {
+              console.warn("[Vault] Could not restore prekeys from vault:", err);
+            }
+          }
 
           // Securely cache the newly imported private key
           const encryptedCache = await encryptVaultData(
@@ -274,16 +327,18 @@ export function useAuth() {
           if (vault.contacts && Array.isArray(vault.contacts)) {
             await db.contacts.clear();
             const validContacts = vault.contacts.filter(
-              (c: { id?: string; payload?: string }) => c.id && c.payload,
+              (c: { id?: string; payload?: string }): c is { id: string; payload: string } =>
+                typeof c?.id === "string" && typeof c?.payload === "string",
             );
             if (validContacts.length > 0) {
               await db.contacts.bulkPut(validContacts);
             }
           }
         }
+      }
 
-        loadedKeys = importPrivateIdentity(privateKeyStrToImport);
-        privateKeyBundle = privateKeyStrToImport;
+      if (!loadedKeys) {
+        throw new Error("Could not initialize cryptographic keys.");
       }
 
       setToken(sessionToken);
@@ -300,7 +355,16 @@ export function useAuth() {
       } catch (cacheErr) {
         console.warn("Session cache unavailable; refresh will require login.", cacheErr);
       }
-      // Set together so the socket only connects once the token is in place.
+
+      // Synchronize protocol & prekeys before socket connects and brings user online
+      try {
+        const p = await startProtocol(username, loadedKeys);
+        await maintainPrekeys(p);
+      } catch (protoErr) {
+        console.warn("[Krypt] Prekey maintenance on login:", protoErr);
+      }
+
+      // Set together so the socket only connects once the token and prekeys are in place.
       setNeedsVaultBackup(!!localStorage.getItem(vaultPendingKey(username)));
       setMyPrivateKey(loadedKeys);
       setUser(username);
@@ -343,12 +407,44 @@ export function useAuth() {
     try {
       const privateKeyStr = exportPrivateIdentity(myPrivateKey);
       const contacts = await db.contacts.toArray();
-      const vaultData = JSON.stringify({
+
+      let prekeysData: VaultPrekeysWire | undefined = undefined;
+      try {
+        const storeKey = await deriveStoreKey(myPrivateKey, user);
+        const prekeyStore = new IndexedDbPrekeyStore({ key: storeKey, dbName: prekeyDbName(user) });
+        if (prekeyStore.exportAll) {
+          const exported = await prekeyStore.exportAll();
+          const spkMeta = loadMeta(user);
+          prekeysData = {
+            signedPrekeys: exported.signedPrekeys.map((r) => ({
+              keyId: r.keyId,
+              publicKey: toBase64url(r.publicKey),
+              secretKey: toBase64url(r.secretKey),
+              createdAt: r.createdAt,
+            })),
+            oneTimePrekeys: exported.oneTimePrekeys.map((r) => ({
+              keyId: r.keyId,
+              publicKey: toBase64url(r.publicKey),
+              secretKey: toBase64url(r.secretKey),
+              createdAt: r.createdAt,
+            })),
+            acceptedSessions: exported.acceptedSessions,
+            spkMeta,
+          };
+        }
+        await prekeyStore.close();
+      } catch (err) {
+        console.warn("[Vault] Could not export prekeys into vault:", err);
+      }
+
+      const vaultData: VaultData = {
+        version: 2,
         privateKey: privateKeyStr,
         contacts,
-      });
+        ...(prekeysData ? { prekeys: prekeysData } : {}),
+      };
 
-      const encryptedData = await encryptVaultData(vaultData, vaultPassword);
+      const encryptedData = await encryptVaultData(JSON.stringify(vaultData), vaultPassword);
 
       const blob = new Blob([encryptedData], {
         type: "application/octet-stream",

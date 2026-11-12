@@ -294,6 +294,64 @@ export class IndexedDbPrekeyStore implements PrekeyStore {
     await done(tx);
   }
 
+  async exportAll(): Promise<{
+    signedPrekeys: PrekeyRecord[];
+    oneTimePrekeys: PrekeyRecord[];
+    acceptedSessions: { spkId: number; sessionId: string }[];
+  }> {
+    const db = await this.db;
+    const spkIds = (await req(db.transaction("spk").objectStore("spk").getAllKeys())) as number[];
+    const signedPrekeys: PrekeyRecord[] = [];
+    for (const id of spkIds) {
+      const rec = await this.get("spk", id);
+      if (rec) signedPrekeys.push(rec);
+    }
+
+    const opkIds = (await req(db.transaction("opk").objectStore("opk").getAllKeys())) as number[];
+    const oneTimePrekeys: PrekeyRecord[] = [];
+    for (const id of opkIds) {
+      const rec = await this.get("opk", id);
+      if (rec) oneTimePrekeys.push(rec);
+    }
+
+    const acceptedKeys = (await req(db.transaction("accepted").objectStore("accepted").getAllKeys())) as string[];
+    const acceptedSessions: { spkId: number; sessionId: string }[] = [];
+    for (const k of acceptedKeys) {
+      if (typeof k === "string") {
+        const slash = k.indexOf("/");
+        if (slash !== -1) {
+          const spkId = Number(k.substring(0, slash));
+          const sessionId = k.substring(slash + 1);
+          if (Number.isInteger(spkId) && sessionId) {
+            acceptedSessions.push({ spkId, sessionId });
+          }
+        }
+      }
+    }
+
+    return { signedPrekeys, oneTimePrekeys, acceptedSessions };
+  }
+
+  async importAll(data: {
+    signedPrekeys?: PrekeyRecord[];
+    oneTimePrekeys?: PrekeyRecord[];
+    acceptedSessions?: { spkId: number; sessionId: string }[];
+  }): Promise<void> {
+    if (data.signedPrekeys && data.signedPrekeys.length > 0) {
+      await this.put("spk", data.signedPrekeys);
+    }
+    if (data.oneTimePrekeys && data.oneTimePrekeys.length > 0) {
+      await this.put("opk", data.oneTimePrekeys);
+    }
+    if (data.acceptedSessions && data.acceptedSessions.length > 0) {
+      const tx = (await this.db).transaction("accepted", "readwrite");
+      for (const a of data.acceptedSessions) {
+        tx.objectStore("accepted").put(1, `${a.spkId}/${a.sessionId}`);
+      }
+      await done(tx);
+    }
+  }
+
   async close(): Promise<void> {
     (await this.db).close();
   }
