@@ -36,25 +36,7 @@ export async function routeMessage(
     return "mailbox_disabled";
   }
 
-  // 2. Sender disabled offline mailbox in user settings
-  try {
-    const senderUser = await prisma.user.findUnique({
-      where: { username: payload.from },
-      select: { mailboxEnabled: true },
-    });
-    if (senderUser && senderUser.mailboxEnabled === false) {
-      sender.emit("message_failed", {
-        to: payload.to,
-        reason: "mailbox_disabled",
-        error: "Your offline mailbox is disabled. Messages can only be sent to online users.",
-      });
-      return "mailbox_disabled";
-    }
-  } catch (err) {
-    console.warn(`[Router] Could not check sender mailbox setting for ${payload.from}:`, err);
-  }
-
-  // 3. Recipient disabled offline mailbox in user settings (or recipient missing)
+  // 2. Recipient disabled offline mailbox in user settings (or recipient missing)
   try {
     const recipient = await prisma.user.findUnique({
       where: { username: payload.to },
@@ -64,7 +46,7 @@ export async function routeMessage(
       sender.emit("message_failed", {
         to: payload.to,
         reason: "mailbox_disabled",
-        error: "Recipient does not accept offline messages.",
+        error: `${payload.to} has disabled their offline mailbox. They must be online to receive messages.`,
       });
       return "mailbox_disabled";
     }

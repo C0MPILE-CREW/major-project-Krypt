@@ -37,8 +37,6 @@ interface ChatWindowProps {
   setPreviewImage: (url: string | null) => void;
   isSending: boolean;
   onlineUsers: string[];
-  mailboxEnabled?: boolean;
-  onToggleMailbox?: () => void;
   protocol?: Protocol | null;
 }
 
@@ -56,8 +54,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   setPreviewImage,
   isSending,
   onlineUsers,
-  mailboxEnabled = true,
-  onToggleMailbox,
   protocol,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -104,8 +100,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [messages]);
 
   const isTargetOnline = activeChat ? onlineUsers.includes(activeChat) : false;
-  const isOfflineBlocked = !mailboxEnabled && !isTargetOnline;
-  const isInputDisabled = isSending || isOfflineBlocked;
+  const isInputDisabled = isSending;
 
   return (
     <div
@@ -125,11 +120,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span
                     className={`inline-block w-2 h-2 rounded-full ${
-                      isTargetOnline ? "bg-emerald-400 shadow-sm shadow-emerald-400/50" : "bg-amber-400"
+                      isTargetOnline ? "bg-emerald-400 shadow-sm shadow-emerald-400/50" : "bg-slate-500"
                     }`}
                   />
                   <p className="text-xs text-slate-400 font-medium">
-                    {isTargetOnline ? "Online" : "Offline"} • Krypt v1 PQ ratchet {isTargetOnline ? "" : (mailboxEnabled ? "(Mailbox Active)" : "(Real-Time Only)")}
+                    {isTargetOnline ? "Online" : "Offline"} • Krypt v1 PQ ratchet
                   </p>
                 </div>
               </div>
@@ -157,25 +152,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 >
                   <span>⚡</span>
                   <span>Diagnostics</span>
-                </button>
-              )}
-              {onToggleMailbox && (
-                <button
-                  type="button"
-                  onClick={onToggleMailbox}
-                  className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition flex items-center gap-1.5 ${
-                    mailboxEnabled
-                      ? "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
-                      : "bg-amber-950/40 border-amber-800/60 text-amber-300 hover:bg-amber-900/50"
-                  }`}
-                  title={
-                    mailboxEnabled
-                      ? "Offline mailbox is ON: messages queued if peer is offline. Click to switch to Real-Time Only."
-                      : "Offline mailbox is OFF: strict real-time delivery only. Click to enable mailbox queueing."
-                  }
-                >
-                  <span className={`w-2 h-2 rounded-full ${mailboxEnabled ? "bg-indigo-400" : "bg-amber-400"}`} />
-                  {mailboxEnabled ? "Mailbox On" : "Real-Time Only"}
                 </button>
               )}
               <button
@@ -330,25 +306,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           </div>
 
           <div className="p-4 bg-slate-900 border-t border-slate-800">
-            {isOfflineBlocked && (
-              <div className="max-w-4xl mx-auto mb-3 p-2.5 bg-amber-950/40 border border-amber-800/50 rounded-xl text-xs text-amber-300 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span>⚠️</span>
-                  <span>
-                    <strong>Offline Mailbox Disabled:</strong> {activeChat} is currently offline. Real-time delivery requires {activeChat} to be online.
-                  </span>
-                </div>
-                {onToggleMailbox && (
-                  <button
-                    type="button"
-                    onClick={onToggleMailbox}
-                    className="px-2.5 py-1 bg-amber-800/50 hover:bg-amber-700/60 text-amber-200 border border-amber-600/40 rounded-lg text-xs font-semibold transition"
-                  >
-                    Enable Mailbox
-                  </button>
-                )}
-              </div>
-            )}
             <div className="flex gap-3 items-center max-w-4xl mx-auto">
               {/* Preserved file inputs (with exact IDs for testing and accessibility) */}
               <input
@@ -483,11 +440,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 placeholder={
                   isSending
                     ? "Calculating cryptographic handshake..."
-                    : isOfflineBlocked
-                      ? `${activeChat} is offline (Real-time only mode: cannot send offline messages)`
-                      : isTargetOnline
-                        ? `Secure message to ${activeChat}...`
-                        : `Secure message to ${activeChat} (queued offline)...`
+                    : isTargetOnline
+                      ? `Secure message to ${activeChat}...`
+                      : `Secure message to ${activeChat} (offline)...`
                 }
                 value={input}
                 onChange={(e) => setInput(e.target.value)}

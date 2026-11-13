@@ -405,10 +405,10 @@ const Sidebar: React.FC<SidebarProps> = ({
               <div className="flex items-center justify-between mb-1.5">
                 <div>
                   <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
-                    Offline Mailbox
+                    My Offline Mailbox
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    {mailboxEnabled ? "Active (Queue when offline)" : "Disabled (Strict Real-Time)"}
+                    {mailboxEnabled ? "Active (Accept messages when offline)" : "Disabled (Strict Real-Time Only)"}
                   </span>
                 </div>
                 <button
@@ -417,7 +417,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
                     mailboxEnabled ? "bg-indigo-600" : "bg-slate-700"
                   }`}
-                  title={mailboxEnabled ? "Disable offline mailbox" : "Enable offline mailbox"}
+                  title={mailboxEnabled ? "Disable your offline mailbox" : "Enable your offline mailbox"}
                 >
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
@@ -428,8 +428,8 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
                 {mailboxEnabled
-                  ? "Encrypted messages wait in server mailbox (up to 7 days) if peer is offline."
-                  : "Strict Real-Time Only: Messages are delivered only when both users are online. Nothing is stored on the server."}
+                  ? "When you are offline, incoming encrypted messages are held securely in your server mailbox (up to 7 days) and delivered when you log in."
+                  : "Strict Real-Time Only: You will receive messages only when you are online. Offline messages sent to you are rejected and never stored on the server."}
               </p>
             </div>
           </div>

@@ -171,8 +171,6 @@ export default function App() {
           setPreviewImage={setPreviewImage}
           isSending={isSending}
           onlineUsers={onlineUsers}
-          mailboxEnabled={mailboxEnabled}
-          onToggleMailbox={toggleMailbox}
           protocol={protocol}
         />
       </div>

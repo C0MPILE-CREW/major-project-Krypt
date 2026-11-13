@@ -72,8 +72,8 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
       await setMailboxSetting(next);
       toast.success(
         next
-          ? "Offline mailbox enabled (messages stored when peer is offline)."
-          : "Offline mailbox disabled (Strict real-time online delivery only).",
+          ? "My offline mailbox enabled: incoming messages will be stored when you are offline."
+          : "My offline mailbox disabled: you will only receive messages in real-time when online.",
       );
     } catch {
       // updated locally
@@ -118,14 +118,14 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
     setInput("");
     setIsSending(true);
     try {
-      await sendChatMessage(protocol, targetUser, { type: "text", text }, mailboxEnabled);
+      await sendChatMessage(protocol, targetUser, { type: "text", text });
     } catch (err) {
       setInput((cur) => (cur === "" ? text : cur));
       reportSendError(err, targetUser);
     } finally {
       setIsSending(false);
     }
-  }, [input, activeChat, isSending, protocol, mailboxEnabled]);
+  }, [input, activeChat, isSending, protocol]);
 
   const sendImage = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -144,14 +144,14 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
       setIsSending(true);
       try {
         const jpeg = await prepareImage(file);
-        await sendChatMessage(protocol, targetUser, { type: "image", data: jpeg, mime: "image/jpeg" }, mailboxEnabled);
+        await sendChatMessage(protocol, targetUser, { type: "image", data: jpeg, mime: "image/jpeg" });
       } catch (err) {
         reportSendError(err, targetUser);
       } finally {
         setIsSending(false);
       }
     },
-    [activeChat, isSending, protocol, mailboxEnabled],
+    [activeChat, isSending, protocol],
   );
 
   const sendAudio = useCallback(
@@ -173,14 +173,14 @@ export function useChat(user: string, myPrivateKey: UserIdentityKeys | null, pro
       setIsSending(true);
       try {
         const data = new Uint8Array(await file.arrayBuffer());
-        await sendChatMessage(protocol, targetUser, { type: "audio", data, mime }, mailboxEnabled);
+        await sendChatMessage(protocol, targetUser, { type: "audio", data, mime });
       } catch (err) {
         reportSendError(err, targetUser);
       } finally {
         setIsSending(false);
       }
     },
-    [activeChat, isSending, protocol, mailboxEnabled],
+    [activeChat, isSending, protocol],
   );
 
   /** Any file, sent in encrypted chunks after the peer accepts (spec 14). Images and audio keep their own buttons. */

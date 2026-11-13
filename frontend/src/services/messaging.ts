@@ -139,7 +139,7 @@ const FAILURE_TEXT: Record<string, (to: string) => string> = {
   blocked: (to) => `You cannot message ${to}.`,
   not_friends: (to) => `You can only message friends; ${to} is not one.`,
   mailbox_full: (to) => `${to}'s offline mailbox is full. Try again later.`,
-  mailbox_disabled: (to) => `Offline mailbox is disabled. ${to} must be online to receive messages.`,
+  mailbox_disabled: (to) => `${to} has disabled their offline mailbox. They must be online to receive messages.`,
   server_error: (to) => `The server could not deliver your message to ${to}.`,
 };
 
