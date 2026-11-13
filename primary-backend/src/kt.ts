@@ -18,6 +18,7 @@ import {
   type NodeStore,
   type OwnerSigProblem,
   type SignedTreeHead,
+  verifyTreeHead,
 } from "./vendor/krypt-shared/index.js";
 import {
   ML_DSA_87_PUBLIC_KEY_BYTES,
@@ -229,7 +230,7 @@ export class KtLog {
    */
   async latestSth(): Promise<SignedTreeHead> {
     const [sth, size] = await Promise.all([this.storage.latestSth(), this.storage.size()]);
-    if (sth && !this.isDue(sth, size)) return sth;
+    if (sth && !(await this.isDue(sth, size))) return sth;
     return this.mutex.run(() =>
       this.storage.locked(async (tx) => {
         const size = await tx.size();
@@ -255,15 +256,16 @@ export class KtLog {
     };
   }
 
-  private isDue(sth: SignedTreeHead | null, size: number): boolean {
+  private async isDue(sth: SignedTreeHead | null, size: number): Promise<boolean> {
     if (!sth) return true;
+    if (!(await verifyTreeHead(sth, this.key.verify))) return true;
     return size > sth.treeSize && this.now() - sth.timestampMs >= this.intervalMs;
   }
 
   /** Must hold the lock. Returns the new head, or null if none was due. */
   private async publishIfDue(tx: KtTx, log: MerkleLog): Promise<SignedTreeHead | null> {
     const prev = await tx.latestSth();
-    if (!this.isDue(prev, log.size)) return null;
+    if (!(await this.isDue(prev, log.size))) return null;
     // Timestamps never go backwards, even if the clock does.
     const ts = Math.max(this.now(), prev ? prev.timestampMs + 1 : 0);
     const sth = await this.sign(log.size, await log.root(), ts);
@@ -522,8 +524,14 @@ function prismaTx(db: Db, nodes: NodeStore): KtTx {
       return row ? toSth(row) : null;
     },
     async insertSth(s) {
-      await db.ktSth.create({
-        data: {
+      await db.ktSth.upsert({
+        where: { treeSize: big(s.treeSize) },
+        update: {
+          rootHash: bytes(s.rootHash),
+          timestamp: big(s.timestampMs),
+          signature: bytes(s.signature),
+        },
+        create: {
           treeSize: big(s.treeSize),
           rootHash: bytes(s.rootHash),
           timestamp: big(s.timestampMs),
@@ -592,8 +600,9 @@ export function memoryKtStorage(): KtStorage & { nodeStore: MemoryNodeStore; sth
       return sths[sths.length - 1] ?? null;
     },
     async insertSth(s) {
-      if (sths.some((x) => x.treeSize === s.treeSize)) throw new Error("duplicate STH size");
-      sths.push(s);
+      const idx = sths.findIndex((x) => x.treeSize === s.treeSize);
+      if (idx >= 0) sths[idx] = s;
+      else sths.push(s);
     },
   };
   const lock = new Mutex();

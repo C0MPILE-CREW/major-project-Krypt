@@ -32,6 +32,7 @@ import {
   checkSthChain,
   cosignatureFromJson,
   encodeLeaf,
+  encodeTreeHead,
   fromBase64,
   hashUsername,
   logIdFromPublicKey,
@@ -143,9 +144,9 @@ export function getKtPeerState(peer: string): KtPeerState {
   return peerStates.get(peer) ?? { state: "error", reason: "not checked yet", at: 0 };
 }
 
-function setGlobal(s: KtGlobalState) {
-  // An alert is sticky for the page's lifetime.
-  if (globalState.mode === "alert" && s.mode !== "alert") return;
+function setGlobal(s: KtGlobalState, force = false) {
+  // An alert is sticky for the page's lifetime unless explicitly forced (e.g. self-healing a stale dev alert).
+  if (!force && globalState.mode === "alert" && s.mode !== "alert") return;
   globalState = s;
   emit();
 }
@@ -230,6 +231,30 @@ export class KtClient {
     } catch {
       this.lastSth = null;
     }
+    // Discard stale unpinned/unverified lastSth from previous ephemeral runs
+    if (this.lastSth) {
+      try {
+        const msg = encodeTreeHead(this.lastSth);
+        if (!verifySth(msg, this.lastSth.signature)) {
+          this.lastSth = null;
+          this.st.lastSth = null;
+          this.st.monitored = null;
+          if (this.st.alert === "tree head signature does not verify under the pinned log key") {
+            this.st.alert = null;
+          }
+          this.save();
+        }
+      } catch {
+        this.lastSth = null;
+        this.st.lastSth = null;
+        this.st.monitored = null;
+        this.save();
+      }
+    }
+    if (this.st.alert === "tree head signature does not verify under the pinned log key") {
+      this.st.alert = null;
+      this.save();
+    }
     if (this.st.selfLogged) this.selfState = "logged";
     if (this.st.alert) {
       globalState = { mode: "alert", reason: this.st.alert };
@@ -289,6 +314,13 @@ export class KtClient {
    */
   private async acceptSth(sth: SignedTreeHead): Promise<boolean> {
     if (this.lastSth) {
+      if (!(await verifyTreeHead(this.lastSth, verifySth))) {
+        this.lastSth = null;
+        this.st.lastSth = null;
+        this.st.monitored = null;
+      }
+    }
+    if (this.lastSth) {
       const link = await this.linkHeads(this.lastSth, sth);
       if (!link.ok) {
         this.raiseAlert(`log ${link.kind}: ${link.reason}`);
@@ -299,9 +331,10 @@ export class KtClient {
     if (!this.lastSth || sth.treeSize > this.lastSth.treeSize) {
       this.lastSth = sth;
       this.st.lastSth = sthToJson(sth);
-      this.save();
     }
-    setGlobal({ mode: "ok", treeSize: this.lastSth!.treeSize, witness: this.witnessResult, self: this.selfState });
+    this.st.alert = null;
+    this.save();
+    setGlobal({ mode: "ok", treeSize: this.lastSth!.treeSize, witness: this.witnessResult, self: this.selfState }, true);
     return true;
   }
 
@@ -347,10 +380,20 @@ export class KtClient {
   /** GET /kt/sth, verified and linked to the stored head. */
   async refreshHead(): Promise<SignedTreeHead | null> {
     if (!this.enabled) return null;
-    const sth = sthFromJson(await getJson("/kt/sth"));
+    let sth: SignedTreeHead;
+    try {
+      sth = sthFromJson(await getJson("/kt/sth"));
+    } catch (err) {
+      this.noteError(`Failed to fetch latest STH: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
     if (!(await verifyTreeHead(sth, verifySth))) {
       this.raiseAlert("tree head signature does not verify under the pinned log key");
       return null;
+    }
+    if (this.st.alert === "tree head signature does not verify under the pinned log key") {
+      this.st.alert = null;
+      this.save();
     }
     return (await this.acceptSth(sth)) ? sth : null;
   }
@@ -439,7 +482,7 @@ export class KtClient {
     }
     this.st.monitored = { size: sth.treeSize, root: toBase64(sth.rootHash) };
     this.save();
-    setGlobal({ mode: "ok", treeSize: sth.treeSize, witness: this.witnessResult, self: this.selfState });
+    setGlobal({ mode: "ok", treeSize: sth.treeSize, witness: this.witnessResult, self: this.selfState }, true);
   }
 
   /**
