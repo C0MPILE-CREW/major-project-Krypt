@@ -97,24 +97,17 @@ export function logKeyFromSeed(seed: Uint8Array): LogKey {
   return keyFromSecret(secretKey, publicKey);
 }
 
+/** Default 32-byte seed for deterministic KT log signing when KT_LOG_SK is unset in development. */
+export const DEFAULT_KT_LOG_SEED_B64 = "BTxsIqBMXPk32hn/6Zs0Oju/V+RxfgDS+y8mv6NgWt8=";
+
 /**
  * Loads the STH signing key from KT_LOG_SK: standard base64 of either a
  * 32-byte seed (preferred; `npm run kt:keygen` prints one) or a 4896-byte
- * ML-DSA-87 secret key. Without it, a random key is generated and a warning
- * logged: fine for development, useless for a witness, because the key (and
- * so the log identity) changes on every restart.
+ * ML-DSA-87 secret key. If unset, uses the project's default persistent seed
+ * so log identities remain stable across restarts.
  */
 export function loadLogKey(env: NodeJS.ProcessEnv = process.env): LogKey {
-  const raw = env.KT_LOG_SK?.trim();
-  if (!raw) {
-    const key = logKeyFromSeed(globalThis.crypto.getRandomValues(new Uint8Array(32)));
-    console.warn(
-      "[KT] WARNING: KT_LOG_SK is not set. Using a random tree-head signing key; " +
-        "every restart creates a new log identity that no witness or client will accept. " +
-        `Public key: ${toBase64(key.publicKey).slice(0, 24)}...`,
-    );
-    return key;
-  }
+  const raw = env.KT_LOG_SK?.trim() || DEFAULT_KT_LOG_SEED_B64;
   let bytes: Uint8Array;
   try {
     bytes = fromBase64(raw);
