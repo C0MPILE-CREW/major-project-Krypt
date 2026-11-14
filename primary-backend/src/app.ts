@@ -11,6 +11,11 @@ export const ALLOWED_ORIGINS = process.env.FRONTEND_URL
 
 export function createApp() {
   const app = express();
+  // Reverse proxies in front of this server (render.yaml). Express takes the
+  // client IP from the X-Forwarded-For entries they added and ignores entries
+  // the client sent. Unset or 0: no proxy, the socket address is the client.
+  const proxyHops = Number(process.env.TRUST_PROXY_HOPS);
+  app.set("trust proxy", Number.isInteger(proxyHops) && proxyHops > 0 ? proxyHops : false);
   app.use(
     helmet({
       contentSecurityPolicy: {

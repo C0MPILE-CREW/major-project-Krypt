@@ -16,6 +16,9 @@ services:
         generateValue: true
       - key: FRONTEND_URL
         sync: false
+      # Requests pass Cloudflare, then Render's proxy, before the app.
+      - key: TRUST_PROXY_HOPS
+        value: 2
       - key: DATABASE_URL
         fromDatabase:
           name: krypt-db

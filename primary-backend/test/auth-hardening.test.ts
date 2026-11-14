@@ -56,15 +56,28 @@ beforeAll(async () => {
 });
 afterAll(() => server.close());
 
-const post = (path: string, body: unknown, token?: string) =>
+const post = (path: string, body: unknown, token?: string, headers: Record<string, string> = {}) =>
   fetch(base + path, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...headers,
     },
     body: JSON.stringify(body),
   });
+
+/** A user with well-formed SRP credentials; every proof these tests send is wrong for it. */
+const createSrpUser = (username: string) =>
+  db.user.create({ data: { username, publicKey: "pk", srpSalt: "5a".repeat(32), srpVerifier: "7b".repeat(256) } });
+
+/** One login as the app does it (challenge, then verify), with a wrong password. */
+async function wrongPasswordLogin(username: string, headers: Record<string, string>) {
+  const challenge = await post("/login/challenge", { username, clientEphemeralPublic: "aa".repeat(32) }, undefined, headers);
+  const { challengeId } = await challenge.json();
+  const proof = { username, challengeId, clientEphemeralPublic: "bb".repeat(32), clientSessionProof: "cc".repeat(32) };
+  return post("/login/verify", proof, undefined, headers);
+}
 
 describe("Auth Hardening & Anti-Enumeration", () => {
   it("returns uniform 200 with synthetic salt/ephemeral for non-existent users", async () => {
@@ -122,6 +135,19 @@ describe("Auth Hardening & Anti-Enumeration", () => {
     });
     // Synthetic fails with 401, NOT 400 "expired or invalid"
     expect(v1.status).toBe(401);
+  });
+
+  it.each([
+    { username: "brute_direct", headers: (): Record<string, string> => ({}) },
+    // A client that forges a new address on every try must not reset its count.
+    { username: "brute_forged_ip", headers: (i: number) => ({ "x-forwarded-for": `203.0.113.${i}` }) },
+  ])("refuses the 11th wrong password in 10 minutes ($username)", async ({ username, headers }) => {
+    await createSrpUser(username);
+
+    // The first 10 wrong passwords are checked and rejected
+    for (let i = 0; i < 10; i++) expect((await wrongPasswordLogin(username, headers(i))).status).toBe(401);
+    // The 11th is refused as rate-limited
+    expect((await wrongPasswordLogin(username, headers(10))).status).toBe(429);
   });
 
   it("allows revoking all sessions by incrementing tokenVersion", async () => {

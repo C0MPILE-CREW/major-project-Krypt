@@ -41,13 +41,10 @@ const registerLimiter = new SlidingWindowLimiter(20, 60 * 60 * 1000);
 const loginChallengeLimiter = new SlidingWindowLimiter(100, 60 * 1000);
 const loginVerifyLimiter = new SlidingWindowLimiter(10, 10 * 60 * 1000);
 
+// Express reads X-Forwarded-For only as far as `trust proxy` allows (app.ts),
+// so a client cannot choose the address its requests are counted under.
 function clientIp(req: Request): string {
-  return (
-    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-    req.ip ||
-    req.socket.remoteAddress ||
-    "unknown"
-  );
+  return req.ip ?? "unknown";
 }
 
 function getSyntheticSrpCredentials(username: string): { salt: string; verifier: string } {
@@ -196,8 +193,8 @@ router.post("/login/verify", async (req, res) => {
     return res.status(400).json({ error: "Login challenge has expired. Please try again." });
   }
 
-  // Check rate limit on verify
-  if (!loginVerifyLimiter.take(rateKey, 0)) {
+  // Refuse once the window holds 10 failures; each failure is recorded below.
+  if (!loginVerifyLimiter.allows(rateKey)) {
     return res.status(429).json({ error: "Too many failed login attempts. Please try again later." });
   }
 

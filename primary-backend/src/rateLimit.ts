@@ -35,6 +35,13 @@ export class SlidingWindowLimiter {
     return ok;
   }
 
+  /** True if `take(key, cost)` would succeed now. Records nothing. */
+  allows(key: string, cost = 1): boolean {
+    const t = this.now();
+    const used = (this.hits.get(key) ?? []).reduce((sum, x) => (t - x.t < this.windowMs ? sum + x.cost : sum), 0);
+    return used + cost <= this.limit;
+  }
+
   /** Number of keys tracked (tests). */
   get size(): number {
     return this.hits.size;
