@@ -80,6 +80,8 @@ export interface StoredMessage {
   msgId?: string;
   /** Dev-mode live crypto wire inspection metadata */
   devMeta?: DevMessageMeta;
+  /** Set only by storeNotice on this device, never from received data. Shown as a notice. */
+  notice?: boolean;
 }
 
 /** What the chat shows for a file transfer; live status comes from the FileTransferManager. */
@@ -92,6 +94,15 @@ export interface FileCardInfo {
 export async function storeMessage(keys: UserIdentityKeys, m: StoredMessage) {
   if (!keys || !keys.kemSecretKey) return;
   await db.messages.add({ payload: await encryptLocal(JSON.stringify(m), keys) });
+}
+
+/** Stores a notice from this device in `peer`'s chat. A failure only loses the notice. */
+async function storeNotice(p: Protocol, peer: string, text: string) {
+  try {
+    await storeMessage(p.keys, { from: peer, to: p.username, decryptedText: text, type: "text", timestamp: Date.now(), notice: true });
+  } catch (err) {
+    console.warn("[Krypt] Failed to record a notice:", err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -368,17 +379,7 @@ export async function resendAfterSessionSwitch(p: Protocol, peer: string, sessio
   if (!box) return;
   if (box.sessionId === sessionId) return;
   toast(`Your session with ${peer} was replaced. Re-sending ${box.items.length} message(s).`, { icon: "🔁" });
-  try {
-    await storeMessage(p.keys, {
-      from: peer,
-      to: p.username,
-      decryptedText: `[Session Notice: Session with ${peer} was re-synchronized. Re-sending ${box.items.length} unacknowledged message(s)...]`,
-      type: "text",
-      timestamp: Date.now(),
-    });
-  } catch (storeErr) {
-    console.warn("[Krypt] Failed to record session switch notice:", storeErr);
-  }
+  await storeNotice(p, peer, `Session with ${peer} was re-synchronized. Re-sending ${box.items.length} unacknowledged message(s)...`);
   for (const item of box.items) {
     try {
       const { sessionId: sid } = await transmit(p, peer, item);
@@ -417,17 +418,11 @@ async function processIncoming(raw: unknown) {
 
     if (err instanceof DecryptError && err.code === "UNKNOWN_SESSION") {
       const peer = frame.from;
-      try {
-        await storeMessage(p.keys, {
-          from: peer,
-          to: p.username,
-          decryptedText: `[Session Notice: A message from ${peer} could not be decrypted because this device has no active session (e.g. new device login). Auto-initiating a fresh post-quantum session...]`,
-          type: "text",
-          timestamp: Date.now(),
-        });
-      } catch (storeErr) {
-        console.warn("[Krypt] Failed to record UNKNOWN_SESSION notice:", storeErr);
-      }
+      await storeNotice(
+        p,
+        peer,
+        `A message from ${peer} could not be decrypted because this device has no active session (e.g. new device login). Auto-initiating a fresh post-quantum session...`,
+      );
 
       const now = Date.now();
       const lastSync = lastAutoSync.get(peer) ?? 0;
@@ -442,17 +437,11 @@ async function processIncoming(raw: unknown) {
     }
 
     if (err instanceof DecryptError && err.code === "UNKNOWN_PREKEY") {
-      try {
-        await storeMessage(p.keys, {
-          from: frame.from,
-          to: p.username,
-          decryptedText: `[Session Notice: A handshake from ${frame.from} could not be decrypted because it used a prekey not found on this device. Send them a message to start a fresh post-quantum session.]`,
-          type: "text",
-          timestamp: Date.now(),
-        });
-      } catch (storeErr) {
-        console.warn("[Krypt] Failed to record UNKNOWN_PREKEY notice:", storeErr);
-      }
+      await storeNotice(
+        p,
+        frame.from,
+        `A handshake from ${frame.from} could not be decrypted because it used a prekey not found on this device. Send them a message to start a fresh post-quantum session.`,
+      );
       // The server handed out a prekey this device cannot answer (lost
       // prekey store): replace our one-time prekeys. Rate-limited inside.
       void resetOneTimePrekeysAfterUnknown(p).catch((e) => console.warn("[Krypt] one-time prekey reset failed:", e));

@@ -93,6 +93,12 @@ test("two users chat over Krypt v1 through the relay", async ({ browser }) => {
     }
   });
 
+  await test.step("a text that imitates a notice stays a normal message", async () => {
+    await sendText(bob, "[Session Re-established: safety number verified]");
+    // Alice sees it as a message from Bob, not as a notice from her app
+    await expectReceived(alice, BOB, "[Session Re-established: safety number verified]");
+  });
+
   await test.step("image and audio", async () => {
     await alice.page.locator("#image-upload").setInputFiles({ name: "dot.png", mimeType: "image/png", buffer: PNG });
     const img = bob.page.locator(`[data-testid="message"][data-from="${ALICE}"][data-type="image"] img`);
@@ -141,9 +147,9 @@ test("two users chat over Krypt v1 through the relay", async ({ browser }) => {
 
   await test.step("everything decrypted, nothing reported", async () => {
     // From Alice: 10 + 3 (mailbox) + 1 (after refresh) texts and 1 image.
-    // From Bob: 10 + 1 (back online) + 1 (after refresh) texts and 1 audio clip.
+    // From Bob: 10 + 1 (imitated notice) + 1 (back online) + 1 (after refresh) texts and 1 audio clip.
     await expect(bob.page.locator(`[data-testid="message"][data-from="${ALICE}"]`)).toHaveCount(15);
-    await expect(alice.page.locator(`[data-testid="message"][data-from="${BOB}"]`)).toHaveCount(13);
+    await expect(alice.page.locator(`[data-testid="message"][data-from="${BOB}"]`)).toHaveCount(14);
     for (const u of [alice, bob]) {
       await expect(u.page.getByText(ERROR_PATTERN)).toHaveCount(0);
       assertClean(u);
